@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated, NoReturn
 
 import typer
+from openai import OpenAI
 from pydantic import TypeAdapter
 
 from anki_series import __version__
@@ -16,6 +17,7 @@ from anki_series.config import Settings
 from anki_series.deck import build_deck
 from anki_series.models import Card, ImageStatus, Sentence
 from anki_series.subtitles import load_sentences
+from anki_series.translate import TranslationCache, TranslationError, translate_cards
 from anki_series.vocab import KnownDeckError, build_vocabulary, load_known_lemmas
 
 app = typer.Typer(help="Genera mazos de Anki a partir de subtítulos de una serie.")
@@ -132,6 +134,84 @@ def build(
     translated = sum(1 for c in cards if c.translation)
     typer.echo(f"Entrada: {input_path}")
     typer.echo(f"Notas: {len(cards)} · Con traducción: {translated} · Con imagen: {with_image}")
+    typer.echo(f"Escrito: {path}")
+
+
+@app.command()
+def translate(
+    input_path: Annotated[
+        Path | None,
+        typer.Option("--input", "-i", help="JSON de entrada. Default: <data>/output/words.json."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="JSON de salida. Default: <data>/output/cards.json."),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit", min=1, help="Solo las primeras N tarjetas (para probar). Escribe solo esas."
+        ),
+    ] = None,
+    batch_size: Annotated[
+        int, typer.Option("--batch-size", min=1, max=100, help="Tarjetas por llamada.")
+    ] = 20,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Modelo de OpenAI. Default: OPENAI_MODEL.")
+    ] = None,
+) -> None:
+    """Traduce al español (México/LATAM) con OpenAI (F4): words.json → cards.json."""
+    settings = Settings()
+    out_dir = settings.data_dir / "output"
+    input_path = input_path or out_dir / "words.json"
+    if not input_path.is_file():
+        _fail(FileNotFoundError(f"No existe {input_path}. Corre primero `extract`."))
+
+    cards = _CARDS.validate_json(input_path.read_bytes())
+    if limit is not None:
+        cards = cards[:limit]
+    model = model or settings.openai_model
+    cache = TranslationCache(settings.data_dir / "cache" / "translations.json")
+
+    def client_factory() -> OpenAI:
+        key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else ""
+        if not key:
+            _fail(ValueError("Falta OPENAI_API_KEY (ponla en .env)."))
+        # max_retries=0: los reintentos los maneja translate.request_batch.
+        return OpenAI(api_key=key, max_retries=0)
+
+    def progress(done: int, total: int) -> None:
+        typer.echo(f"  lote listo: {done}/{total}")
+
+    typer.echo(f"Entrada: {input_path} · Tarjetas: {len(cards)} · Modelo: {model}")
+    try:
+        translated, new = translate_cards(
+            cards,
+            cache=cache,
+            model=model,
+            client_factory=client_factory,
+            batch_size=batch_size,
+            on_batch=progress,
+        )
+    except TranslationError as exc:
+        typer.secho(
+            "El progreso ya traducido quedó en caché; vuelve a correr el comando para continuar.",
+            err=True,
+        )
+        _fail(exc)
+
+    path = output or out_dir / "cards.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_CARDS.dump_json(translated, indent=2))
+
+    done = sum(1 for c in translated if c.translation)
+    imageable = sum(1 for c in translated if c.imageable)
+    typer.echo(
+        f"Traducidas: {done}/{len(translated)} (nuevas: {new}, de caché: {done - new})"
+        f" · Ilustrables: {imageable}"
+    )
+    if done < len(translated):
+        typer.echo(f"  {len(translated) - done} sin traducir; vuelve a correr para reintentarlas.")
     typer.echo(f"Escrito: {path}")
 
 
