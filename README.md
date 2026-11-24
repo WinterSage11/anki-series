@@ -6,8 +6,9 @@ Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés d
 - Una oración real de la serie como ejemplo.
 - Traducción al español de México/LATAM considerando el contexto de la oración.
 - Una imagen cuando aporta valor (empaquetada dentro del `.apkg`).
+- Audio con voz neuronal de la palabra y de la oración (empaquetado dentro del `.apkg`).
 
-> Estado: **Fase 5** (vocabulario → `words.json` → traducción con OpenAI → `cards.json` → imágenes de Pixabay → mazo `.apkg`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
+> Estado: **Fase 6** (vocabulario → `words.json` → traducción con OpenAI → `cards.json` → imágenes de Pixabay → audio con edge-tts → mazo `.apkg`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
 
 ## Requisitos
 
@@ -118,6 +119,34 @@ damn:
 
 Los overrides se aplican en cada corrida, aunque la tarjeta ya tenga imagen.
 
+### Audio (voces neuronales)
+
+Usa [edge-tts](https://github.com/rany2/edge-tts) (voces neuronales de Microsoft Edge; no requiere API key, sí conexión a internet). Por cada tarjeta genera dos `.mp3`: la palabra y la oración de ejemplo en inglés.
+
+```bash
+# Prueba con 10 tarjetas (actualiza data/output/cards.json)
+uv run anki-series audio --limit 10
+
+# Todas, con otra voz
+uv run anki-series audio --voice en-US-AriaNeural
+
+# Ver las voces disponibles
+uv run edge-tts --list-voices | grep en-US
+```
+
+- La voz por default es `TTS_VOICE` (en `.env`; default `en-US-AndrewNeural`).
+- Los audios se guardan en `data/cache/audio/` con un nombre que depende de (voz, texto): el mismo texto con la misma voz nunca se vuelve a generar. Cambiar de voz genera audios nuevos; para regenerar uno, borra su `.mp3`.
+- Se generan varios audios en paralelo (`--concurrency`, default 4). Los errores de red o del servicio se reintentan hasta 3 veces con espera creciente.
+- Si se interrumpe, vuelve a correr el mismo comando: el progreso se guarda cada 10 tarjetas.
+
+| Opción | Default | Qué hace |
+|---|---|---|
+| `-i/--input` | `data/output/cards.json` | JSON de entrada |
+| `-o/--output` | el mismo de entrada | JSON de salida |
+| `--limit` | — | Procesa solo N tarjetas sin audio (escribe todas) |
+| `--voice` | `TTS_VOICE` | Voz de edge-tts |
+| `--concurrency` | 4 | Audios generados en paralelo |
+
 ### Construir el mazo
 
 ```bash
@@ -130,9 +159,9 @@ uv run anki-series build -i data/output/words.json -o data/output/mi-serie.apkg
 
 Cada tarjeta (inglés → español) tiene:
 
-- **Frente**: solo la palabra y su categoría (+ botón de audio arriba a la derecha, cuando exista).
+- **Frente**: solo la palabra y su categoría (+ botón de audio arriba a la derecha, si corriste `audio`).
 - **Reverso**: palabra + audio, traducción (vacía si no corriste `translate`), imagen centrada (si corriste `images` y se encontró una) y la oración de la serie con la palabra resaltada, su audio y la traducción en cursiva.
-- **Audio**: los campos `AudioWord` y `AudioExample` ya existen pero van vacíos; se llenarán con `.mp3` de voces neuronales más adelante (el TTS nativo del sistema sonaba mal).
+- **Audio**: si corriste `audio`, los `.mp3` de la palabra y de la oración van dentro del `.apkg` (con nombres únicos `anki-series-<hash>.mp3`); si no, los botones no aparecen. No se usa el TTS nativo del sistema (sonaba mal).
 - **Metadata oculta**: créditos de la imagen y archivo/timestamp de origen.
 
 Volver a importar un `.apkg` regenerado **actualiza** las notas existentes en lugar de duplicarlas (el GUID depende solo de serie + lema + categoría). Tu progreso de estudio se conserva.

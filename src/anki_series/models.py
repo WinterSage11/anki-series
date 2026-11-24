@@ -1,7 +1,7 @@
 """Modelo de datos compartido por todas las etapas del pipeline.
 
 Una ``Card`` nace en la fase de vocabulario (solo inglés) y las fases siguientes
-van llenando campos (traducción, imagen) sin cambiar el esquema.
+van llenando campos (traducción, imagen, audio) sin cambiar el esquema.
 """
 
 from enum import StrEnum
@@ -24,6 +24,14 @@ class ImageInfo(BaseModel):
     source_url: str | None = None
     credit: str | None = None  # solo metadata; no se muestra en la tarjeta
     reason: str | None = None  # por qué se omitió, si aplica
+
+
+class AudioInfo(BaseModel):
+    """Audios ``.mp3`` de la tarjeta (Fase 6). ``None`` = aún no se genera."""
+
+    voice: str | None = None  # voz de edge-tts con la que se generaron
+    word: str | None = None  # ruta local del .mp3 de la palabra (lema)
+    example: str | None = None  # ruta local del .mp3 de la oración en inglés
 
 
 class SourceRef(BaseModel):
@@ -56,6 +64,9 @@ class Card(BaseModel):
 
     # Fase 5: imagen
     image: ImageInfo = Field(default_factory=ImageInfo)
+
+    # Fase 6: audio (cards.json anteriores no traen este campo → vacío por default)
+    audio: AudioInfo = Field(default_factory=AudioInfo)
 
     @property
     def key(self) -> str:
