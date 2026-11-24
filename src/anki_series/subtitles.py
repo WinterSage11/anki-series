@@ -26,6 +26,19 @@ _DIALOGUE_DASH = re.compile(r"^-+\s*")
 _LEADING_ELLIPSIS = re.compile(r"^(\.{2,}|…)\s*")
 _SPACES = re.compile(r"\s+")
 
+# Créditos de quien hizo/sincronizó los subtítulos ("== sync, corrected by elderman ==",
+# "Subtitles by ...", "www.addic7ed.com"). No son diálogo y meten palabras basura.
+_CREDIT = re.compile(
+    r"^\s*==.*==\s*$"  # == ... ==
+    r"|\bsync(?:ed|hronized)?\b.*\bcorrected\b"  # "sync, corrected by", "synced and corrected"
+    r"|\bcorrected\s+by\b"
+    r"|\b(?:subtitles?|subs|captions?)\s+by\b"
+    r"|open\s*subtitles|addic7ed"
+    r"|\bwww\."
+    r"|\b[\w-]+\.(?:com|org|net)\b",  # URLs sueltas: "tvsubtitles.net", "podnapisi.com"
+    re.IGNORECASE,
+)
+
 # Fin de oración: . ! ? … seguidos (opcionalmente) de comillas de cierre.
 _TERMINATED = re.compile(r"[.!?…][\"')]*$")
 _SOFT_END = re.compile(r"(\.{2,}|…)[\"')]*$")  # puntos suspensivos: puede continuar
@@ -131,17 +144,24 @@ def parse_srt(text: str) -> list[Cue]:
 # --- Limpieza --------------------------------------------------------------------------
 
 
+def is_credit_line(line: str) -> bool:
+    """¿La línea es un crédito de los subtítulos (sync/corrección, sitio web)?"""
+    return bool(_CREDIT.search(line))
+
+
 def clean_line(line: str) -> str:
     """Quita etiquetas, anotaciones y nombres de hablante de una línea.
 
-    Devuelve "" si la línea no tiene diálogo (música, efectos de sonido).
-    Conserva el guion inicial de diálogo para que el llamador lo detecte.
+    Devuelve "" si la línea no tiene diálogo (música, efectos de sonido, créditos de los
+    subtítulos). Conserva el guion inicial de diálogo para que el llamador lo detecte.
     """
     line = line.translate(_TYPOGRAPHY)
     if "♪" in line or "♫" in line:  # letras de canciones: no son diálogo
         return ""
     line = _HTML_TAG.sub("", line)
     line = _ASS_TAG.sub("", line)
+    if is_credit_line(line):
+        return ""
     line = _ANNOTATION.sub("", line)
     line = _SPACES.sub(" ", line).strip()
 
@@ -156,6 +176,11 @@ def clean_line(line: str) -> str:
 
 def _cue_fragments(cue: Cue) -> list[_Fragment]:
     """Une las líneas partidas de un cue; separa turnos marcados con guion."""
+    # Un crédito puede venir partido en varias líneas ("== sync, corrected by" / "elderman
+    # =="): se revisa el cue completo además de cada línea (en ``clean_line``).
+    whole = " ".join(_ASS_TAG.sub("", _HTML_TAG.sub("", raw)).strip() for raw in cue.lines)
+    if is_credit_line(whole):
+        return []
     fragments: list[_Fragment] = []
     current: list[str] = []
     current_is_turn = False

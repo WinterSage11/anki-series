@@ -28,7 +28,12 @@ from anki_series.images import (
 from anki_series.models import Card, ImageStatus, Sentence
 from anki_series.subtitles import load_sentences
 from anki_series.translate import TranslationCache, TranslationError, translate_cards
-from anki_series.vocab import KnownDeckError, build_vocabulary, load_known_lemmas
+from anki_series.vocab import (
+    KnownDeckError,
+    build_vocabulary,
+    common_words,
+    load_known_lemmas,
+)
 
 app = typer.Typer(help="Genera mazos de Anki a partir de subtítulos de una serie.")
 
@@ -69,6 +74,14 @@ def extract(
             help="Campo del mazo conocido: índice o nombre. Default: KNOWN_DECK_FIELD o 0.",
         ),
     ] = None,
+    exclude_common: Annotated[
+        int,
+        typer.Option(
+            "--exclude-common",
+            min=0,
+            help="Excluye las N palabras más frecuentes del inglés (wordfreq). 0 = no excluir.",
+        ),
+    ] = 0,
     output: Annotated[
         Path | None,
         typer.Option("--output", "-o", help="Ruta del JSON. Default: <data>/output/words.json."),
@@ -93,6 +106,9 @@ def extract(
         except (FileNotFoundError, KnownDeckError) as exc:
             _fail(exc)
         typer.echo(f"Mazo conocido: {known_deck.name} · {len(known)} formas/lemas a excluir")
+    if exclude_common:
+        known |= common_words(exclude_common)
+        typer.echo(f"Palabras comunes excluidas (wordfreq): top {exclude_common}")
 
     cards = build_vocabulary(sentences, series, top=top, known_lemmas=known)
     path = output or settings.data_dir / "output" / "words.json"
@@ -386,6 +402,80 @@ def audio(
     if with_audio < len(updated):
         typer.echo(f"  {len(updated) - with_audio} sin audio; vuelve a correr para continuar.")
     typer.echo(f"Escrito: {output}")
+
+
+@app.command("all")
+def run_all(
+    input_path: Annotated[
+        Path, typer.Argument(help="Archivo .srt o carpeta con .srt (temporada/serie).")
+    ],
+    series: Annotated[str, typer.Option("--series", help="Nombre de la serie.")],
+    top: Annotated[int, typer.Option("--top", min=1, help="Cuántos lemas conservar.")] = 1000,
+    known_deck: Annotated[
+        Path | None,
+        typer.Option("--known-deck", help="Mazo .apkg con palabras que ya conoces (se excluyen)."),
+    ] = None,
+    known_field: Annotated[
+        str | None,
+        typer.Option("--known-field", help="Campo del mazo conocido: índice o nombre."),
+    ] = None,
+    exclude_common: Annotated[
+        int,
+        typer.Option(
+            "--exclude-common", min=0, help="Excluye las N palabras más frecuentes del inglés."
+        ),
+    ] = 0,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit", min=1, help="Solo las primeras N palabras en todo el flujo (para probar)."
+        ),
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Modelo de OpenAI. Default: OPENAI_MODEL.")
+    ] = None,
+    voice: Annotated[
+        str | None, typer.Option("--voice", help="Voz de edge-tts. Default: TTS_VOICE.")
+    ] = None,
+    overrides_path: Annotated[
+        Path | None,
+        typer.Option("--overrides", help="Ajustes de imágenes. Default: <data>/overrides.yaml."),
+    ] = None,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", min=1, max=16, help="Audios generados en paralelo.")
+    ] = DEFAULT_CONCURRENCY,
+) -> None:
+    """Flujo completo: extract → translate → images → audio → build.
+
+    Usa los cachés de cada etapa: tras un error, vuelve a correrlo y solo hará lo que falta.
+    """
+    steps = ("extract", "translate", "images", "audio", "build")
+
+    def step(n: int) -> None:
+        typer.secho(f"\n[{n}/{len(steps)}] {steps[n - 1]}", bold=True)
+
+    step(1)
+    extract(
+        input_path,
+        series=series,
+        dry_run=False,
+        limit=0,
+        top=top,
+        known_deck=known_deck,
+        known_field=known_field,
+        exclude_common=exclude_common,
+        output=None,
+    )
+    step(2)
+    # --limit recorta aquí: cards.json queda con N tarjetas y las etapas siguientes
+    # procesan todo cards.json.
+    translate(input_path=None, output=None, limit=limit, batch_size=20, model=model)
+    step(3)
+    images(input_path=None, output=None, limit=None, overrides_path=overrides_path)
+    step(4)
+    audio(input_path=None, output=None, limit=None, voice=voice, concurrency=concurrency)
+    step(5)
+    build(input_path=None, output=None)
 
 
 _CARDS = TypeAdapter(list[Card])

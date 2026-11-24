@@ -1,14 +1,24 @@
+import json
+import zipfile
 from pathlib import Path
 
+import httpx
+import pytest
 from apkg_factory import make_apkg
 from pydantic import TypeAdapter
+
+# Dobles de red de cada fase (sin llamadas reales): se reutilizan tal cual.
+from test_audio import FakeCommunicate
+from test_images import FakePixabay
+from test_translate import FakeClient
 from typer.testing import CliRunner
 
-from anki_series import __version__
+from anki_series import __version__, audio, cli
 from anki_series.cli import app
-from anki_series.models import Card
+from anki_series.models import Card, ImageStatus
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.srt"
+CARDS = TypeAdapter(list[Card])
 runner = CliRunner()
 
 
@@ -64,6 +74,109 @@ def test_extract_known_deck_wrong_field_fails_cleanly(tmp_path: Path):
     assert result.exit_code == 1
     assert "Campos disponibles" in result.output
     assert not (tmp_path / "w.json").exists()
+
+
+def test_extract_exclude_common(tmp_path: Path):
+    out = tmp_path / "words.json"
+    args = ["extract", str(FIXTURE), "--series", "X", "-o", str(out)]
+    result = runner.invoke(app, [*args, "--exclude-common", "200"])
+    assert result.exit_code == 0, result.output
+    assert "top 200" in result.output
+    lemmas = {c.lemma for c in CARDS.validate_json(out.read_bytes())}
+    assert not {"need", "find", "time", "go"} & lemmas  # entre las 200 más comunes
+    assert {"bail", "cop", "errand"} <= lemmas
+
+
+def test_extract_no_interjections_or_contraction_nouns(tmp_path: Path):
+    out = tmp_path / "words.json"
+    result = runner.invoke(app, ["extract", str(FIXTURE), "--series", "X", "-o", str(out)])
+    assert result.exit_code == 0, result.output
+    found = {(c.lemma, c.pos) for c in CARDS.validate_json(out.read_bytes())}
+    assert not any(pos == "INTJ" for _lemma, pos in found)  # "huh"
+    assert ("go", "NOUN") not in found
+    assert ("go", "VERB") in found  # "gonna"
+
+
+# --- all: flujo completo con OpenAI, Pixabay y edge-tts simulados ----------------------
+
+
+@pytest.fixture
+def all_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict:
+    FakeCommunicate.created = []
+    monkeypatch.setattr(audio.edge_tts, "Communicate", FakeCommunicate)
+    data = tmp_path / "data"
+    monkeypatch.setenv("DATA_DIR", str(data))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    monkeypatch.setenv("PIXABAY_API_KEY", "test-key")
+    monkeypatch.delenv("TTS_VOICE", raising=False)
+    openai_clients: list[FakeClient] = []
+
+    def fake_openai(**kwargs):
+        openai_clients.append(FakeClient())
+        return openai_clients[-1]
+
+    pixabay = FakePixabay({"red car": ["car, red, vehicle"]})
+    monkeypatch.setattr(cli, "OpenAI", fake_openai)
+    monkeypatch.setattr(
+        cli, "_pixabay_http", lambda: httpx.Client(transport=httpx.MockTransport(pixabay.handler))
+    )
+    return {"data": data, "openai": openai_clients, "pixabay": pixabay, "tts": FakeCommunicate}
+
+
+def test_all_runs_full_pipeline(all_env: dict):
+    args = ["all", str(FIXTURE), "--series", "The Night Shift", "--exclude-common", "100"]
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    for step in ("[1/5] extract", "[2/5] translate", "[3/5] images", "[4/5] audio", "[5/5] build"):
+        assert step in result.output
+
+    out = all_env["data"] / "output"
+    cards = CARDS.validate_json((out / "cards.json").read_bytes())
+    words = CARDS.validate_json((out / "words.json").read_bytes())
+    assert len(cards) == len(words) > 0
+    assert all(c.translation and c.audio.word and c.audio.example for c in cards)
+    car = next(c for c in cards if c.lemma == "car")
+    assert car.image.status == ImageStatus.FOUND
+    assert all_env["pixabay"].searches == ["red car"]
+
+    apkg = out / "the-night-shift.apkg"
+    with zipfile.ZipFile(apkg) as zf:
+        media = json.loads(zf.read("media"))
+    assert len(media) > 1  # imagen + audios empaquetados
+
+
+def test_all_second_run_uses_caches(all_env: dict):
+    args = ["all", str(FIXTURE), "--series", "X"]
+    assert runner.invoke(cli.app, args).exit_code == 0
+    tts_calls = len(all_env["tts"].created)
+    searches = list(all_env["pixabay"].searches)
+
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    assert len(all_env["openai"]) == 1  # 2.ª corrida: todo de caché, ni se crea el cliente
+    assert all_env["pixabay"].searches == searches
+    assert len(all_env["tts"].created) == tts_calls
+
+
+def test_all_limit_and_options(all_env: dict):
+    args = ["all", str(FIXTURE), "--series", "X", "--limit", "3", "--model", "gpt-other"]
+    result = runner.invoke(cli.app, [*args, "--voice", "en-US-AriaNeural", "--concurrency", "2"])
+    assert result.exit_code == 0, result.output
+    cards = CARDS.validate_json((all_env["data"] / "output" / "cards.json").read_bytes())
+    assert len(cards) == 3
+    assert all(c.audio.voice == "en-US-AriaNeural" for c in cards)
+    assert all_env["openai"][0].calls[0]["model"] == "gpt-other"
+    assert "Notas: 3" in result.output
+
+
+def test_all_stops_on_failing_stage(all_env: dict, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    result = runner.invoke(cli.app, ["all", str(FIXTURE), "--series", "X"])
+    assert result.exit_code == 1
+    assert "OPENAI_API_KEY" in result.output
+    assert "[3/5] images" not in result.output
+    assert (all_env["data"] / "output" / "words.json").exists()
 
 
 def test_extract_missing_path_fails_cleanly(tmp_path: Path):

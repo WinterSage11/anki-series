@@ -8,7 +8,7 @@ Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés d
 - Una imagen cuando aporta valor (empaquetada dentro del `.apkg`).
 - Audio con voz neuronal de la palabra y de la oración (empaquetado dentro del `.apkg`).
 
-> Estado: **Fase 6** (vocabulario → `words.json` → traducción con OpenAI → `cards.json` → imágenes de Pixabay → audio con edge-tts → mazo `.apkg`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
+> Estado: **Fase 7** (vocabulario → `words.json` → traducción con OpenAI → `cards.json` → imágenes de Pixabay → audio con edge-tts → mazo `.apkg`, todo con un solo comando `all`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
 
 ## Requisitos
 
@@ -19,19 +19,38 @@ Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés d
 
 ```bash
 uv sync
-cp .env.example .env   # y llena las API keys cuando lleguemos a las fases 4 y 5
+cp .env.example .env   # y llena OPENAI_API_KEY y PIXABAY_API_KEY
 ```
 
-## Uso (previsto)
+## Uso rápido: todo en un comando
 
 ```bash
-# Un archivo o una carpeta con todos los .srt de la temporada/serie
+# Prueba barata: solo 20 palabras en todo el flujo
+uv run anki-series all data/raw/mi-serie/ --series "Mi Serie" --exclude-common 500 --limit 20
+
+# Completo: un archivo o una carpeta con todos los .srt de la temporada/serie
 uv run anki-series all data/raw/mi-serie/ --series "Mi Serie" \
-    --known-deck data/known/top1000.apkg
+    --known-deck data/known/mi-mazo.apkg --known-field Palabra --exclude-common 500
 # → data/output/mi-serie.apkg
 ```
 
-Hoy solo existe:
+`all` corre `extract → translate → images → audio → build` con las rutas por default de `data/output/`. Cada etapa usa su caché, así que si algo falla (red, API key, límite de uso) se detiene ahí: corrige y vuelve a correr el mismo comando; lo ya hecho no se repite ni se vuelve a cobrar.
+
+| Opción | Default | Qué hace |
+|---|---|---|
+| `--series` | — (obligatorio) | Nombre de la serie (define el mazo y el GUID de las notas) |
+| `--top` | 1000 | Cuántos lemas conservar |
+| `--known-deck` / `--known-field` | — / `KNOWN_DECK_FIELD` o `0` | Mazo con palabras que ya conoces |
+| `--exclude-common` | 0 | Excluye las N palabras más frecuentes del inglés (`wordfreq`) |
+| `--limit` | — | Solo las primeras N palabras en todo el flujo (para probar) |
+| `--model` | `OPENAI_MODEL` | Modelo de OpenAI |
+| `--overrides` | `data/overrides.yaml` | Ajustes manuales de imágenes |
+| `--voice` | `TTS_VOICE` | Voz de edge-tts |
+| `--concurrency` | 4 | Audios generados en paralelo |
+
+## Etapas por separado
+
+Útil para inspeccionar o re-ejecutar una sola fase:
 
 ```bash
 uv run anki-series version
@@ -52,10 +71,18 @@ Opciones de `extract`:
 | `--top` | 1000 | Cuántos lemas conservar |
 | `--known-deck` | — | Mazo `.apkg` con palabras que ya conoces; se excluyen sus lemas |
 | `--known-field` | `KNOWN_DECK_FIELD` o `0` | Campo del mazo con la palabra en inglés (índice o nombre). Si el campo no contiene palabras, el error lista los campos disponibles |
+| `--exclude-common` | 0 | Excluye las N palabras más frecuentes del inglés según [wordfreq](https://github.com/rspeer/wordfreq) (p. ej. 500 quita `get`, `go`, `know`, `time`…). 0 = no excluir |
 | `-o/--output` | `data/output/words.json` | Ruta del JSON de salida |
 | `--limit` | 10 | Filas de muestra en pantalla |
 
 Para no repetir `--known-field`, ponlo en `.env` (p. ej. `KNOWN_DECK_FIELD=Palabra`).
+
+Qué se filtra automáticamente:
+
+- Créditos de quien hizo los subtítulos (`== sync, corrected by … ==`, `Subtitles by …`, OpenSubtitles, Addic7ed, URLs).
+- Nombres propios, números, puntuación, stopwords (pronombres, preposiciones…), interjecciones (`yeah`, `oh`, `okay`, `hey`…) y muletillas (`hmm`, `mm-hmm`, `uh`, `um`…). El slang y las groserías se quedan.
+- Nombres de personajes que spaCy a veces etiqueta como sustantivo (`Harvey, you gotta…`): si un lema aparece como nombre propio en más de la mitad de sus apariciones, se descarta. Efecto secundario posible: `mom`/`dad` usados como vocativo.
+- `gonna`, `gotta` y `wanna` cuentan como `go`, `get` y `want` (verbo), y en la tarjeta se resalta la contracción completa.
 
 ### Traducir (OpenAI)
 

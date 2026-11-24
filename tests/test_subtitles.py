@@ -7,6 +7,7 @@ from anki_series.subtitles import (
     cues_to_sentences,
     decode_bytes,
     find_srt_files,
+    is_credit_line,
     load_sentences,
     parse_srt,
     split_sentences,
@@ -151,6 +152,52 @@ def test_sound_only_cue_does_not_break_a_sentence():
 
 def test_unterminated_text_at_end_of_file_is_emitted():
     assert texts(srt("Wait for me")) == ["Wait for me"]
+
+
+# --- Créditos de subtítulos ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "== sync, corrected by elderman ==",
+        "<font color=#00FF00>== sync, corrected by elderman ==</font>",
+        "Synced and corrected by honeybunny",
+        "Subtitles by DramaFever",
+        "Resync by someone, corrected by another",
+        "Downloaded from www.OpenSubtitles.org",
+        "Best watched using Open Subtitles MKV Player",
+        "www.addic7ed.com",
+        "Support us at tvsubtitles.net",
+        "{\\an8}== @elder_man ==",
+    ],
+)
+def test_credit_lines_are_removed(line: str):
+    assert clean_line(line) == ""
+
+
+def test_credit_cue_is_dropped_without_breaking_dialogue():
+    content = srt(
+        "We need to",
+        "== sync, corrected by\nelderman ==",  # crédito partido en dos líneas
+        "settle this case.",
+        "Synced and corrected by honeybunny\nwww.addic7ed.com",
+    )
+    assert texts(content) == ["We need to settle this case."]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "I corrected the file myself.",
+        "We need to sync our calendars.",
+        "She was the subject of the case.",
+        "Go to the bank, Mike.",
+    ],
+)
+def test_dialogue_is_not_mistaken_for_credits(line: str):
+    assert not is_credit_line(line)
+    assert clean_line(line) == line
 
 
 # --- Archivos y carpetas ---------------------------------------------------------------
