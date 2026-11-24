@@ -10,6 +10,7 @@ import re
 import sqlite3
 import tempfile
 import zipfile
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -18,13 +19,31 @@ from pathlib import Path
 import spacy
 import zstandard
 from spacy.language import Language
+from wordfreq import iter_wordlist
 
 from anki_series.models import Card, Sentence
 
 SPACY_MODEL = "en_core_web_sm"
 
-# Categorías que nunca son tarjeta: nombres propios, números, puntuación, símbolos, basura.
-EXCLUDED_POS = {"PROPN", "NUM", "PUNCT", "SYM", "X", "SPACE"}
+# Categorías que nunca son tarjeta: nombres propios, números, puntuación, símbolos, basura
+# e interjecciones (yeah, oh, okay, uh, hey: relleno sin valor como tarjeta).
+EXCLUDED_POS = {"PROPN", "NUM", "PUNCT", "SYM", "X", "SPACE", "INTJ"}
+# Muletillas vocales que spaCy no siempre etiqueta como INTJ ("Mm-hmm" → mm/NOUN +
+# hmm/NOUN; "Mm, good" → mm/ADJ). Se aceptan alargadas ("hmmm", "uhh"), salvo "er":
+# "err" es un verbo real.
+_FILLERS = {"hmm", "mm", "mhm", "uh", "um", "huh", "ah", "er"}
+_FILLER_ELONGATED = re.compile(r"^(?:h*m+|m+h+m+|u+h+|u+m+|h+u+h+|a+h+)$")
+# Señales de "nombre" para la votación por lema (ver ``count_lemmas``).
+_NAME_POS = "PROPN"
+_NAME_ENTS = {"PERSON"}
+# Contracciones informales → (lema, POS) del verbo que representan. spaCy parte "gonna"
+# en "gon" + "na" (y a veces etiqueta "gon" como NOUN); "wanna" queda con lema "wanna".
+_CONTRACTIONS = {
+    "gonna": ("go", "VERB"),
+    "gotta": ("get", "VERB"),
+    "wanna": ("want", "VERB"),
+}
+_CONTRACTION_SPLITS = {("gon", "na"): "gonna", ("got", "ta"): "gotta", ("wan", "na"): "wanna"}
 # La stoplist de spaCy (pensada para búsqueda) incluye verbos y sustantivos clave del
 # diálogo: get, go, make, take, say, see, front, side... Solo se aplica fuera de estas
 # categorías, así se van pronombres, auxiliares, preposiciones y "really/very/just".
@@ -60,17 +79,53 @@ def _example_score(sentence: Sentence) -> tuple[int, int]:
     return (out_of_range, abs(n - _IDEAL_WORDS))
 
 
+def contraction(token) -> tuple[str, int] | None:
+    """Si el token es (o empieza) una contracción informal: (forma, n.º de tokens).
+
+    Reconoce el token único ("wanna") y el par que deja spaCy ("gon" + "na", sin espacio).
+    """
+    text = token.text.lower()
+    if text in _CONTRACTIONS:
+        return text, 1
+    if token.whitespace_ == "" and token.i + 1 < len(token.doc):
+        form = _CONTRACTION_SPLITS.get((text, token.doc[token.i + 1].text.lower()))
+        if form:
+            return form, 2
+    return None
+
+
+def token_lemma_pos(token) -> tuple[str, str]:
+    """(lema en minúsculas, POS) corrigiendo contracciones: "gonna" → ("go", "VERB")."""
+    found = contraction(token)
+    if found:
+        return _CONTRACTIONS[found[0]]
+    return token.lemma_.lower(), token.pos_
+
+
+def is_filler(word: str) -> bool:
+    """¿Es una muletilla vocal (hmm, mm, uh, um…)? ``word`` en minúsculas."""
+    return word in _FILLERS or bool(_FILLER_ELONGATED.match(word))
+
+
 def _token_key(token, stop_words: set[str]) -> tuple[str, str] | None:
     """(lema, POS) si el token cuenta como vocabulario; ``None`` si se filtra."""
-    if token.pos_ in EXCLUDED_POS or token.ent_type_ == "PERSON":
+    if token.pos_ in EXCLUDED_POS and contraction(token) is None:
         return None
-    lemma = token.lemma_.lower()
+    if token.ent_type_ in _NAME_ENTS:
+        return None
+    lemma, pos = token_lemma_pos(token)
+    if is_filler(lemma) or is_filler(token.text.lower()):
+        return None
     is_stop = token.is_stop or lemma in stop_words
-    if is_stop and token.pos_ not in CONTENT_POS:
+    if is_stop and pos not in CONTENT_POS:
         return None
     if not _VALID_LEMMA.match(lemma) or len(lemma) < 2:
         return None
-    return lemma, token.pos_
+    return lemma, pos
+
+
+def _is_name(token) -> bool:
+    return token.pos_ == _NAME_POS or token.ent_type_ in _NAME_ENTS
 
 
 def count_lemmas(sentences: list[Sentence], nlp: Language | None = None) -> dict:
@@ -78,14 +133,26 @@ def count_lemmas(sentences: list[Sentence], nlp: Language | None = None) -> dict
 
     Devuelve ``{(lema, pos): _Candidate}``. Un lema cuenta una vez por cada aparición.
     En empate de calidad de ejemplo gana la primera aparición (orden de la serie).
+
+    Nombres propios colados: spaCy etiqueta un mismo personaje como ``PROPN`` en unas
+    líneas y como ``NOUN`` en otras ("Harvey"). Por eso cada lema vota en todo el corpus:
+    si más de la mitad de sus apariciones son ``PROPN`` o entidad ``PERSON``, se descarta
+    en todos sus POS.
     """
     nlp = nlp or load_nlp()
     stop_words = nlp.Defaults.stop_words
     candidates: dict[tuple[str, str], _Candidate] = {}
+    name_votes: Counter[str] = Counter()
+    total_votes: Counter[str] = Counter()
     texts = (s.text for s in sentences)
     for sentence, doc in zip(sentences, nlp.pipe(texts, batch_size=256), strict=True):
         score = _example_score(sentence)
         for token in doc:
+            if token.is_alpha and contraction(token) is None:
+                surface = token.lemma_.lower()
+                total_votes[surface] += 1
+                if _is_name(token):
+                    name_votes[surface] += 1
             key = _token_key(token, stop_words)
             if key is None:
                 continue
@@ -96,7 +163,8 @@ def count_lemmas(sentences: list[Sentence], nlp: Language | None = None) -> dict
                 cand.frequency += 1
                 if score < cand.example_score:
                     cand.example, cand.example_score = sentence, score
-    return candidates
+    names = {lemma for lemma, n in name_votes.items() if n * 2 > total_votes[lemma]}
+    return {key: c for key, c in candidates.items() if key[0] not in names}
 
 
 def build_vocabulary(
@@ -130,6 +198,28 @@ def build_vocabulary(
         )
         for rank, ((lemma, pos), cand) in enumerate(ranked[:top], start=1)
     ]
+
+
+# --- Palabras ultra-comunes (wordfreq) -------------------------------------------------
+
+
+def common_words(n: int) -> set[str]:
+    """Las ``n`` palabras más frecuentes del inglés según ``wordfreq`` (datos locales).
+
+    Solo cuenta palabras (se saltan números y contracciones como "don't"), así ``n``
+    significa n palabras. Se comparan contra el lema tal cual, sin lematizar la lista:
+    las formas base de las palabras comunes ya están en ella, y lematizar palabras sueltas
+    sin contexto mete ruido ("saw" → "see").
+    """
+    words: set[str] = set()
+    if n <= 0:
+        return words
+    for word in iter_wordlist("en"):
+        if word.isascii() and word.isalpha():
+            words.add(word)
+            if len(words) >= n:
+                break
+    return words
 
 
 # --- Mazo conocido (.apkg) -------------------------------------------------------------

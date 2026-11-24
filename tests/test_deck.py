@@ -92,6 +92,17 @@ def test_example_highlights_inflected_form_and_escapes_html(tmp_path: Path, card
     assert examples[2] == "The <b>cops</b> are here."  # forma flexionada
 
 
+def test_example_highlights_whole_contraction():
+    examples = highlight_examples(
+        [
+            card("go", "VERB", "I'm gonna go home."),
+            card("want", "VERB", "You wanna dance?"),
+        ]
+    )
+    assert examples[0] == "I&#x27;m <b>gonna</b> <b>go</b> home."
+    assert examples[1] == "You <b>wanna</b> dance?"
+
+
 def test_example_without_match_is_left_plain():
     [example] = highlight_examples([card("bail", "VERB", "Nothing to see here.")])
     assert "<b>" not in example

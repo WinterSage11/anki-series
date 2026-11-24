@@ -17,7 +17,7 @@ import genanki
 from spacy.language import Language
 
 from anki_series.models import Card, ImageStatus
-from anki_series.vocab import load_nlp
+from anki_series.vocab import contraction, load_nlp, token_lemma_pos
 
 # Generado una sola vez con random.randrange(1 << 30, 1 << 31). NUNCA cambiarlo: es global
 # para todas las series. El deck_id, en cambio, se deriva de la serie (ver ``deck_id``).
@@ -159,14 +159,22 @@ def highlight_examples(cards: Sequence[Card], nlp: Language | None = None) -> li
 
 
 def _highlight(doc, card: Card) -> str:
-    same_lemma = {t.i for t in doc if t.lemma_.lower() == card.lemma}
-    exact = {i for i in same_lemma if doc[i].pos_ == card.pos}
-    marked = exact or same_lemma
+    # token_lemma_pos corrige contracciones ("gonna" → go/VERB), igual que en vocab.
+    keys = {t.i: token_lemma_pos(t) for t in doc}
+    same_lemma = {i for i, (lemma, _pos) in keys.items() if lemma == card.lemma}
+    exact = {i for i in same_lemma if keys[i][1] == card.pos}
+    marked = set()
+    for i in exact or same_lemma:
+        found = contraction(doc[i])
+        marked.update(range(i, i + (found[1] if found else 1)))  # "gon" + "na"
     parts = []
     for token in doc:
         text = html.escape(token.text)
         if token.i in marked:
-            text = f"<b>{text}</b>"
+            # Tokens marcados pegados (sin espacio) van en un solo <b>: <b>gonna</b>.
+            joined = token.i - 1 in marked and doc[token.i - 1].whitespace_ == ""
+            ends = token.i + 1 not in marked or token.whitespace_ != ""
+            text = ("" if joined else "<b>") + text + ("</b>" if ends else "")
         parts.append(text + token.whitespace_)
     return "".join(parts)
 
