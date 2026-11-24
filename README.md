@@ -7,7 +7,7 @@ Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés d
 - Traducción al español de México/LATAM considerando el contexto de la oración.
 - Una imagen cuando aporta valor (empaquetada dentro del `.apkg`).
 
-> Estado: **Fase 0** (estructura del proyecto). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
+> Estado: **Fase 1** (lectura y limpieza de subtítulos). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
 
 ## Requisitos
 
@@ -34,6 +34,9 @@ Hoy solo existe:
 
 ```bash
 uv run anki-series version
+
+# Vista previa de las oraciones limpias que se extraen (no escribe nada)
+uv run anki-series extract data/raw/mi-serie/ --series "Mi Serie" --dry-run --limit 20
 ```
 
 ## Desarrollo

@@ -33,6 +33,13 @@ class SourceRef(BaseModel):
     start: str  # timestamp SRT, p. ej. "00:12:41,200"
 
 
+class Sentence(BaseModel):
+    """Oración limpia extraída de los subtítulos (salida de la fase 1)."""
+
+    text: str
+    source: SourceRef
+
+
 class Card(BaseModel):
     series: str
     lemma: str
