@@ -1,0 +1,40 @@
+[project]
+name = "anki-series"
+version = "0.1.0"
+description = "Genera mazos de Anki (.apkg) con el vocabulario más usado en los subtítulos de una serie."
+readme = "README.md"
+authors = [
+    { name = "Javier Lozano", email = "fj.lozano.11@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.14.4",
+    "pydantic-settings>=2.16.3",
+    "typer>=0.29.2",
+]
+
+[project.scripts]
+anki-series = "anki_series.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: errores básicos (pycodestyle/pyflakes), I: orden de imports,
+# UP: sintaxis moderna de Python, B: bugs comunes (flake8-bugbear)
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

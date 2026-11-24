@@ -1,0 +1,23 @@
+# Entorno virtual y cachés de Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secretos
+.env
+
+# Datos (subtítulos con copyright, cachés, salidas)
+data/
+*.apkg
+
+# Sistema / editores
+.DS_Store
+.vscode/
+
+# Configuración local de Claude Code (personal)
+.claude/settings.local.json
