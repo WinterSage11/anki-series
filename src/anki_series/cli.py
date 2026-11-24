@@ -3,6 +3,7 @@
 Comandos previstos: extract (F1-F2), build (F3), translate (F4), images (F5), all.
 """
 
+import re
 from collections import Counter
 from pathlib import Path
 from typing import Annotated, NoReturn
@@ -12,7 +13,8 @@ from pydantic import TypeAdapter
 
 from anki_series import __version__
 from anki_series.config import Settings
-from anki_series.models import Card, Sentence
+from anki_series.deck import build_deck
+from anki_series.models import Card, ImageStatus, Sentence
 from anki_series.subtitles import load_sentences
 from anki_series.vocab import KnownDeckError, build_vocabulary, load_known_lemmas
 
@@ -93,7 +95,51 @@ def extract(
         )
 
 
+@app.command()
+def build(
+    input_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--input",
+            "-i",
+            help="JSON de tarjetas. Default: <data>/output/cards.json o, si no existe, words.json.",
+        ),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Ruta del .apkg. Default: <data>/output/<serie>.apkg."),
+    ] = None,
+) -> None:
+    """Construye el mazo .apkg (F3) a partir de words.json / cards.json."""
+    settings = Settings()
+    out_dir = settings.data_dir / "output"
+    if input_path is None:
+        cards_json = out_dir / "cards.json"
+        input_path = cards_json if cards_json.exists() else out_dir / "words.json"
+    if not input_path.is_file():
+        _fail(FileNotFoundError(f"No existe {input_path}. Corre primero `extract`."))
+
+    cards = _CARDS.validate_json(input_path.read_bytes())
+    if not cards:
+        _fail(ValueError(f"{input_path} no tiene tarjetas."))
+    path = output or out_dir / f"{_slug(cards[0].series)}.apkg"
+    try:
+        build_deck(cards, path)
+    except (FileNotFoundError, ValueError) as exc:
+        _fail(exc)
+
+    with_image = sum(1 for c in cards if c.image.status == ImageStatus.FOUND)
+    translated = sum(1 for c in cards if c.translation)
+    typer.echo(f"Entrada: {input_path}")
+    typer.echo(f"Notas: {len(cards)} · Con traducción: {translated} · Con imagen: {with_image}")
+    typer.echo(f"Escrito: {path}")
+
+
 _CARDS = TypeAdapter(list[Card])
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "deck"
 
 
 def _fail(exc: Exception) -> NoReturn:

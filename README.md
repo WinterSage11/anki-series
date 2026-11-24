@@ -7,7 +7,7 @@ Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés d
 - Traducción al español de México/LATAM considerando el contexto de la oración.
 - Una imagen cuando aporta valor (empaquetada dentro del `.apkg`).
 
-> Estado: **Fase 2** (vocabulario → `words.json`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
+> Estado: **Fase 3** (vocabulario → `words.json` → mazo `.apkg` solo en inglés). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
 
 ## Requisitos
 
@@ -55,6 +55,25 @@ Opciones de `extract`:
 | `--limit` | 10 | Filas de muestra en pantalla |
 
 Para no repetir `--known-field`, ponlo en `.env` (p. ej. `KNOWN_DECK_FIELD=Palabra`).
+
+### Construir el mazo
+
+```bash
+# Lee data/output/cards.json (si existe) o words.json → data/output/mi-serie.apkg
+uv run anki-series build
+
+# Rutas explícitas
+uv run anki-series build -i data/output/words.json -o data/output/mi-serie.apkg
+```
+
+Cada tarjeta (inglés → español) tiene:
+
+- **Frente**: solo la palabra y su categoría (+ botón de audio arriba a la derecha, cuando exista).
+- **Reverso**: palabra + audio, traducción (vacía hasta la Fase 4), imagen centrada (si hay) y la oración de la serie con la palabra resaltada, su audio y la traducción en cursiva.
+- **Audio**: los campos `AudioWord` y `AudioExample` ya existen pero van vacíos; se llenarán con `.mp3` de voces neuronales más adelante (el TTS nativo del sistema sonaba mal).
+- **Metadata oculta**: créditos de la imagen y archivo/timestamp de origen.
+
+Volver a importar un `.apkg` regenerado **actualiza** las notas existentes en lugar de duplicarlas (el GUID depende solo de serie + lema + categoría). Tu progreso de estudio se conserva.
 
 ## Desarrollo
 
