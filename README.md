@@ -7,7 +7,7 @@ Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés d
 - Traducción al español de México/LATAM considerando el contexto de la oración.
 - Una imagen cuando aporta valor (empaquetada dentro del `.apkg`).
 
-> Estado: **Fase 4** (vocabulario → `words.json` → traducción con OpenAI → `cards.json` → mazo `.apkg`; sin imágenes todavía). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
+> Estado: **Fase 5** (vocabulario → `words.json` → traducción con OpenAI → `cards.json` → imágenes de Pixabay → mazo `.apkg`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
 
 ## Requisitos
 
@@ -80,6 +80,44 @@ Por cada palabra el modelo devuelve, en español de México/LATAM y considerando
 
 **Caché**: cada lote se guarda en `data/cache/translations.json` al terminar. Si el proceso se interrumpe o falla, vuelve a correr el mismo comando: solo se piden los lotes que faltan. Cambiar el modelo o la oración de ejemplo genera una traducción nueva. Los errores transitorios (red, timeout, límite de uso, 5xx) se reintentan hasta 3 veces con espera creciente.
 
+### Imágenes (Pixabay)
+
+Requiere `PIXABAY_API_KEY` en `.env` ([obtenla aquí](https://pixabay.com/api/docs/)) y haber corrido `translate` (el modelo decide qué palabras son ilustrables y con qué búsqueda).
+
+```bash
+# Prueba con 10 tarjetas (actualiza data/output/cards.json; las demás quedan pendientes)
+uv run anki-series images --limit 10
+
+# Todas las pendientes
+uv run anki-series images
+```
+
+- Solo se buscan las palabras concretas (`imageable`); las demás quedan "omitidas".
+- Si Pixabay no devuelve un resultado cuyos tags coincidan con la búsqueda, la tarjeta queda **sin imagen** (mejor eso que una foto engañosa).
+- Las imágenes se reducen a máx. 400 px (JPEG) y se guardan en `data/cache/images/`. Una búsqueda ya hecha no vuelve a llamar a la API.
+- Si se interrumpe, vuelve a correr el mismo comando: el progreso se guarda cada 10 tarjetas.
+- Los créditos (autor + página de Pixabay) quedan en la metadata de la nota, no en la tarjeta.
+
+| Opción | Default | Qué hace |
+|---|---|---|
+| `-i/--input` | `data/output/cards.json` | JSON de entrada |
+| `-o/--output` | el mismo de entrada | JSON de salida |
+| `--limit` | — | Procesa solo N tarjetas (escribe todas) |
+| `--overrides` | `data/overrides.yaml` | Ajustes manuales |
+
+**Ajustes manuales** (`data/overrides.yaml`): la llave es `lema` (todas sus categorías) o `lema/POS` (solo esa tarjeta; gana sobre `lema`). Cada entrada lleva exactamente una opción:
+
+```yaml
+bat/NOUN:
+  query: bat animal flying        # otra búsqueda en Pixabay
+knife:
+  image: data/overrides/knife.jpg # imagen propia (ruta relativa al proyecto)
+damn:
+  skip: true                      # sin imagen
+```
+
+Los overrides se aplican en cada corrida, aunque la tarjeta ya tenga imagen.
+
 ### Construir el mazo
 
 ```bash
@@ -93,7 +131,7 @@ uv run anki-series build -i data/output/words.json -o data/output/mi-serie.apkg
 Cada tarjeta (inglés → español) tiene:
 
 - **Frente**: solo la palabra y su categoría (+ botón de audio arriba a la derecha, cuando exista).
-- **Reverso**: palabra + audio, traducción (vacía si no corriste `translate`), imagen centrada (si hay) y la oración de la serie con la palabra resaltada, su audio y la traducción en cursiva.
+- **Reverso**: palabra + audio, traducción (vacía si no corriste `translate`), imagen centrada (si corriste `images` y se encontró una) y la oración de la serie con la palabra resaltada, su audio y la traducción en cursiva.
 - **Audio**: los campos `AudioWord` y `AudioExample` ya existen pero van vacíos; se llenarán con `.mp3` de voces neuronales más adelante (el TTS nativo del sistema sonaba mal).
 - **Metadata oculta**: créditos de la imagen y archivo/timestamp de origen.
 
