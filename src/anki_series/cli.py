@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Annotated, NoReturn
 
+import httpx
 import typer
 from openai import OpenAI
 from pydantic import TypeAdapter
@@ -15,6 +16,14 @@ from pydantic import TypeAdapter
 from anki_series import __version__
 from anki_series.config import Settings
 from anki_series.deck import build_deck
+from anki_series.images import (
+    ImageCache,
+    ImageError,
+    OverridesError,
+    PixabayClient,
+    fetch_images,
+    load_overrides,
+)
 from anki_series.models import Card, ImageStatus, Sentence
 from anki_series.subtitles import load_sentences
 from anki_series.translate import TranslationCache, TranslationError, translate_cards
@@ -215,7 +224,108 @@ def translate(
     typer.echo(f"Escrito: {path}")
 
 
+@app.command()
+def images(
+    input_path: Annotated[
+        Path | None,
+        typer.Option("--input", "-i", help="JSON de tarjetas. Default: <data>/output/cards.json."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output", "-o", help="JSON de salida. Default: el mismo de entrada (se actualiza)."
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option(
+            "--limit", min=1, help="Procesa solo N tarjetas pendientes; escribe todas igual."
+        ),
+    ] = None,
+    overrides_path: Annotated[
+        Path | None,
+        typer.Option("--overrides", help="Ajustes manuales. Default: <data>/overrides.yaml."),
+    ] = None,
+) -> None:
+    """Busca y descarga imágenes de Pixabay (F5): cards.json → cards.json con imagen."""
+    settings = Settings()
+    input_path = input_path or settings.data_dir / "output" / "cards.json"
+    output = output or input_path
+    if not input_path.is_file():
+        _fail(FileNotFoundError(f"No existe {input_path}. Corre primero `translate`."))
+
+    cards = _CARDS.validate_json(input_path.read_bytes())
+    try:
+        overrides = load_overrides(overrides_path or settings.data_dir / "overrides.yaml")
+    except OverridesError as exc:
+        _fail(exc)
+    cache = ImageCache(settings.data_dir / "cache" / "images")
+    http: list[httpx.Client] = []
+
+    def client_factory() -> PixabayClient:
+        key = settings.pixabay_api_key.get_secret_value() if settings.pixabay_api_key else ""
+        if not key:
+            _fail(ValueError("Falta PIXABAY_API_KEY (ponla en .env)."))
+        http.append(_pixabay_http())
+        return PixabayClient(http[0], key)
+
+    def checkpoint(current: list[Card]) -> None:
+        _write_json_atomic(output, current)
+
+    def progress(done: int, total: int, card: Card) -> None:
+        if done % 25 == 0 or done == total:
+            typer.echo(f"  {done}/{total}")
+
+    pending = sum(1 for c in cards if c.image.status == ImageStatus.PENDING)
+    typer.echo(
+        f"Entrada: {input_path} · Tarjetas: {len(cards)} · Pendientes: {pending}"
+        f" · Overrides: {len(overrides)}"
+    )
+    try:
+        updated, stats = fetch_images(
+            cards,
+            cache=cache,
+            overrides=overrides,
+            client_factory=client_factory,
+            limit=limit,
+            checkpoint=checkpoint,
+            on_card=progress,
+        )
+    except (ImageError, OverridesError) as exc:
+        typer.secho(
+            f"El progreso quedó guardado en {output}; vuelve a correr para continuar.", err=True
+        )
+        _fail(exc)
+    finally:
+        for client in http:
+            client.close()
+
+    _write_json_atomic(output, updated)
+    with_image = sum(1 for c in updated if c.image.status == ImageStatus.FOUND)
+    left = sum(1 for c in updated if c.image.status == ImageStatus.PENDING and c.imageable)
+    typer.echo(
+        f"Procesadas: {len(stats.keys)} · Con imagen: {stats.found} · Sin resultado:"
+        f" {stats.not_found} · Omitidas: {stats.skipped} · De caché: {stats.from_cache}"
+    )
+    typer.echo(f"Total con imagen: {with_image}/{len(updated)}")
+    if left:
+        typer.echo(f"  {left} ilustrables pendientes; vuelve a correr para continuar.")
+    typer.echo(f"Escrito: {output}")
+
+
 _CARDS = TypeAdapter(list[Card])
+
+
+def _pixabay_http() -> httpx.Client:
+    """Cliente HTTP de Pixabay (los tests lo reemplazan por uno con MockTransport)."""
+    return httpx.Client(timeout=30, follow_redirects=True)
+
+
+def _write_json_atomic(path: Path, cards: list[Card]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(_CARDS.dump_json(cards, indent=2))
+    tmp.replace(path)
 
 
 def _slug(text: str) -> str:
