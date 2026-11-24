@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "charset-normalizer>=3.5.3",
     "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
     "typer>=0.29.2",

@@ -43,7 +43,7 @@ Cada etapa lee/escribe JSON intermedio en `data/output/` (`words.json` → `card
 
 ## Fases
 - [x] F0 Setup
-- [ ] F1 Subtítulos (archivo o carpeta → oraciones limpias con timestamp)
+- [x] F1 Subtítulos (archivo o carpeta → oraciones limpias con timestamp)
 - [ ] F2 Vocabulario (top 1,000 lema+POS, ejemplo, exclusión por mazo conocido) → `words.json`
 - [ ] F3 Deck esqueleto solo inglés (campos de traducción/imagen vacíos)
 - [ ] F4 Traducción contextual (OpenAI + caché)
