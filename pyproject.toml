@@ -9,9 +9,12 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "charset-normalizer>=3.5.3",
+    "en-core-web-sm",
     "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
+    "spacy>=3.8.18",
     "typer>=0.29.2",
+    "zstandard>=0.25.0",
 ]
 
 [project.scripts]
@@ -39,3 +42,6 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.uv.sources]
+en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
