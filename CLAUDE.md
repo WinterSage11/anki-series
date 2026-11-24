@@ -22,7 +22,7 @@ src/anki_series/
   cli.py        # typer: extract / translate / images / build / all
   subtitles.py  # (F1) leer y limpiar .srt (archivo o carpeta)
   vocab.py      # (F2) lematizar, filtrar, contar, elegir ejemplo, excluir mazo conocido
-  deck.py       # (F3) genanki
+  deck.py       # (F3) genanki: modelo de nota fijo, GUID estable, resaltado, media
   translate.py  # (F4) OpenAI Structured Outputs + caché
   images.py     # (F5) Pixabay + Pillow
 tests/          # pytest; fixtures inventados en tests/fixtures/, .apkg sintéticos con tests/apkg_factory.py
@@ -38,14 +38,14 @@ Cada etapa lee/escribe JSON intermedio en `data/output/` (`words.json` → `card
 5. **Tarjeta**: una sola dirección inglés → español. Frente: palabra + oración en inglés (+ imagen). Reverso: traducción + oración en español.
 6. **Uso**: personal + amigos cercanos → **sin capturas de video**; solo imágenes con licencia redistribuible.
 7. **Imágenes**: Pixabay principal. Créditos solo en metadata (no visibles en la tarjeta). El LLM decide `imageable` + `image_query`; `data/overrides.yaml` para ajustes manuales. Mejor sin imagen que con una engañosa. Redimensionar a máx. 400 px, JPG.
-8. **genanki**: `model_id` y `deck_id` son constantes fijas en el código; nunca regenerarlas (romperían las actualizaciones en Anki).
+8. **genanki**: `MODEL_ID` es una constante global fija en `deck.py`; nunca regenerarla (rompería las actualizaciones en Anki). `deck_id` es determinista por serie: `2**30 + sha256("anki-series|<serie>")[:8] % 2**30` (series distintas no se mezclan al importar); mazo `anki-series::<serie>`. Campos del modelo (no cambiar orden ni nombres): `Word`, `POS`, `ExampleEN` (HTML escapado, palabra en `<b>` re-lematizando la oración con spaCy), `Translation`, `ExampleES`, `Image` (`<img>`), `AudioWord`, `AudioExample` (`[sound:…mp3]`, vacíos hasta tener voces neuronales; **sin TTS nativo**, sonaba mal), `Credits` y `Source` (metadata oculta). Plantilla: tarjeta blanca centrada, secciones separadas por líneas. Frente = `Word` + `POS` + `{{#AudioWord}}` arriba a la derecha. Reverso = (1) `Word` + audio, (2) `traducción:`, (3) `{{#Image}}` centrada, (4) `ejemplo:` con `ExampleEN` + `{{#AudioExample}}` a la derecha y `ExampleES` en cursiva. Media renombrada a `anki-series-<sha1(key)[:12]>.<ext>` (la carpeta de media de Anki es global). Tag de la nota = POS.
 9. El modelo `Card` incluye `image` desde el inicio; las fases posteriores solo llenan campos, no cambian el esquema.
 
 ## Fases
 - [x] F0 Setup
 - [x] F1 Subtítulos (archivo o carpeta → oraciones limpias con timestamp)
 - [x] F2 Vocabulario (top 1,000 lema+POS, ejemplo, exclusión por mazo conocido) → `words.json` (lista de `Card` solo inglés). Ejemplo = oración de 4–20 palabras más cercana a 10; empate → primera aparición.
-- [ ] F3 Deck esqueleto solo inglés (campos de traducción/imagen vacíos)
+- [x] F3 Deck esqueleto (`build`: `cards.json` o `words.json` → `<serie>.apkg`; campos de traducción/imagen vacíos hasta F4/F5)
 - [ ] F4 Traducción contextual (OpenAI + caché)
 - [ ] F5 Imágenes (Pixabay)
 - [ ] F6 Opcional (TTS, overrides avanzados…)
