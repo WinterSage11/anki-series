@@ -25,14 +25,14 @@ src/anki_series/
   deck.py       # (F3) genanki
   translate.py  # (F4) OpenAI Structured Outputs + caché
   images.py     # (F5) Pixabay + Pillow
-tests/          # pytest; fixtures inventados en tests/fixtures/
+tests/          # pytest; fixtures inventados en tests/fixtures/, .apkg sintéticos con tests/apkg_factory.py
 data/           # NO versionado: raw/, cache/, output/, known/
 ```
 Cada etapa lee/escribe JSON intermedio en `data/output/` (`words.json` → `cards.json` → `.apkg`) para poder inspeccionar y re-ejecutar cada fase por separado.
 
 ## Decisiones de diseño (no cambiar sin discutir)
 1. **Unidad de tarjeta: lema + POS** (`run/VERB` y `run/NOUN` son tarjetas distintas). spaCy `en_core_web_sm`.
-2. **Filtros**: excluir nombres propios (POS `PROPN` / NER `PERSON`), stopwords, números y puntuación. **Mantener slang y groserías.** Excluir lemas ya presentes en un mazo `.apkg` local (`--known-deck`): zip → `collection.anki21b` (zstd) / `.anki21` / `.anki2` (SQLite) → `notes.flds` separado por `\x1f` → campo configurable (default 0) → quitar HTML → lematizar. `wordfreq` solo como corte opcional.
+2. **Filtros**: excluir nombres propios (POS `PROPN` / NER `PERSON`), stopwords, números y puntuación. **Mantener slang y groserías.** La stoplist de spaCy solo se aplica a tokens que no son `NOUN`/`VERB`/`ADJ` (incluye `get`, `go`, `make`, `say`, `front`… que sí son vocabulario). Excluir lemas ya presentes en un mazo `.apkg` local (`--known-deck`): zip → `collection.anki21b` (zstd) > `.anki21` > `.anki2` (SQLite; en orden de prioridad, porque si existe uno nuevo el `.anki2` es un stub vacío) → `notes.flds` separado por `\x1f` → campo configurable por índice o nombre (`--known-field` / `KNOWN_DECK_FIELD`, default 0; error con la lista de campos si no contiene palabras) → quitar HTML y `[sound:]` → lematizar. Se ignoran entradas de varias palabras (phrasal verbs). La exclusión es por lema, para todos sus POS, y ocurre antes del corte top N. `wordfreq` solo como corte opcional (aún no implementado).
 3. **Entrada**: un `.srt` o una carpeta de `.srt` (temporada/serie). `--series` obligatorio; el GUID de la nota es `genanki.guid_for(series, lemma, pos)`.
 4. **Traducción**: OpenAI con Structured Outputs usando modelos Pydantic. Modelo en `OPENAI_MODEL` (default `gpt-4o-mini`). Por lote se devuelve: `translation`, `example_es`, `imageable`, `image_query`. Español de México/LATAM. Cachear en `data/cache/` para no repetir llamadas.
 5. **Tarjeta**: una sola dirección inglés → español. Frente: palabra + oración en inglés (+ imagen). Reverso: traducción + oración en español.
@@ -44,7 +44,7 @@ Cada etapa lee/escribe JSON intermedio en `data/output/` (`words.json` → `card
 ## Fases
 - [x] F0 Setup
 - [x] F1 Subtítulos (archivo o carpeta → oraciones limpias con timestamp)
-- [ ] F2 Vocabulario (top 1,000 lema+POS, ejemplo, exclusión por mazo conocido) → `words.json`
+- [x] F2 Vocabulario (top 1,000 lema+POS, ejemplo, exclusión por mazo conocido) → `words.json` (lista de `Card` solo inglés). Ejemplo = oración de 4–20 palabras más cercana a 10; empate → primera aparición.
 - [ ] F3 Deck esqueleto solo inglés (campos de traducción/imagen vacíos)
 - [ ] F4 Traducción contextual (OpenAI + caché)
 - [ ] F5 Imágenes (Pixabay)

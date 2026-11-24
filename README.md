@@ -7,7 +7,7 @@ Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés d
 - Traducción al español de México/LATAM considerando el contexto de la oración.
 - Una imagen cuando aporta valor (empaquetada dentro del `.apkg`).
 
-> Estado: **Fase 1** (lectura y limpieza de subtítulos). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
+> Estado: **Fase 2** (vocabulario → `words.json`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
 
 ## Requisitos
 
@@ -37,7 +37,24 @@ uv run anki-series version
 
 # Vista previa de las oraciones limpias que se extraen (no escribe nada)
 uv run anki-series extract data/raw/mi-serie/ --series "Mi Serie" --dry-run --limit 20
+
+# Vocabulario: top 1,000 lemas (lema + categoría) con oración de ejemplo
+# → data/output/words.json
+uv run anki-series extract data/raw/mi-serie/ --series "Mi Serie" \
+    --known-deck data/known/mi-mazo.apkg --known-field Palabra
 ```
+
+Opciones de `extract`:
+
+| Opción | Default | Qué hace |
+|---|---|---|
+| `--top` | 1000 | Cuántos lemas conservar |
+| `--known-deck` | — | Mazo `.apkg` con palabras que ya conoces; se excluyen sus lemas |
+| `--known-field` | `KNOWN_DECK_FIELD` o `0` | Campo del mazo con la palabra en inglés (índice o nombre). Si el campo no contiene palabras, el error lista los campos disponibles |
+| `-o/--output` | `data/output/words.json` | Ruta del JSON de salida |
+| `--limit` | 10 | Filas de muestra en pantalla |
+
+Para no repetir `--known-field`, ponlo en `.env` (p. ej. `KNOWN_DECK_FIELD=Palabra`).
 
 ## Desarrollo
 
