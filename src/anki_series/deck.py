@@ -25,8 +25,8 @@ MODEL_ID = 2104579187
 
 MODEL_NAME = "anki-series (EN → ES)"
 # El orden y los nombres de los campos son parte del esquema: no cambiarlos después de
-# publicar un mazo. AudioWord/AudioExample guardan ``[sound:archivo.mp3]`` (vacíos hasta
-# tener voces neuronales). Credits y Source son metadata: ninguna plantilla los muestra.
+# publicar un mazo. AudioWord/AudioExample guardan ``[sound:archivo.mp3]`` (vacíos si no se
+# corrió ``audio``). Credits y Source son metadata: ninguna plantilla los muestra.
 FIELDS = [
     "Word",
     "POS",
@@ -174,10 +174,25 @@ def _highlight(doc, card: Card) -> str:
 # --- Construcción del mazo -------------------------------------------------------------
 
 
-def _media_name(card: Card, path: Path) -> str:
+def _media_name(key: str, suffix: str) -> str:
     """Nombre único en la colección de Anki (la carpeta de media es global)."""
-    digest = hashlib.sha1(card.key.encode()).hexdigest()[:12]
-    return f"anki-series-{digest}{path.suffix.lower() or '.jpg'}"
+    digest = hashlib.sha1(key.encode()).hexdigest()[:12]
+    return f"anki-series-{digest}{suffix}"
+
+
+def _audio_media(card: Card, path: str | None, kind: str) -> tuple[str, Path] | None:
+    """``(nombre en Anki, ruta local)`` de un audio de la tarjeta, si tiene.
+
+    El nombre se deriva del archivo del caché (que ya identifica voz + texto): tarjetas con el
+    mismo audio comparten archivo, y otra voz u oración produce otro nombre (Anki no
+    reemplaza un media existente con el mismo nombre al reimportar).
+    """
+    if not path:
+        return None
+    src = Path(path)
+    if not src.is_file():
+        raise FileNotFoundError(f"Audio ({kind}) de {card.lemma}/{card.pos} no encontrado: {src}")
+    return _media_name(f"audio|{src.name}", ".mp3"), src
 
 
 def _image_path(card: Card) -> Path | None:
@@ -195,7 +210,13 @@ def _credits(card: Card) -> str:
     return html.escape(" · ".join(parts))
 
 
-def _fields(card: Card, example_html: str, image_html: str) -> list[str]:
+def _sound(media: tuple[str, Path] | None) -> str:
+    return f"[sound:{media[0]}]" if media else ""
+
+
+def _fields(
+    card: Card, example_html: str, image_html: str, audio_word: str, audio_example: str
+) -> list[str]:
     return [
         html.escape(card.lemma),
         card.pos,
@@ -203,15 +224,15 @@ def _fields(card: Card, example_html: str, image_html: str) -> list[str]:
         html.escape(card.translation or ""),
         html.escape(card.example_es or ""),
         image_html,
-        "",  # AudioWord: [sound:...] cuando haya voces neuronales
-        "",  # AudioExample
+        audio_word,  # [sound:anki-series-<hash>.mp3] o ""
+        audio_example,
         _credits(card) if image_html else "",
         html.escape(f"{card.source.file} {card.source.start}"),
     ]
 
 
 def build_deck(cards: Sequence[Card], output: Path, nlp: Language | None = None) -> Path:
-    """Escribe ``output`` (.apkg) con una nota por tarjeta y las imágenes encontradas."""
+    """Escribe ``output`` (.apkg) con una nota por tarjeta, sus imágenes y audios."""
     if not cards:
         raise ValueError("No hay tarjetas para construir el mazo.")
     series = {c.series for c in cards}
@@ -225,13 +246,20 @@ def build_deck(cards: Sequence[Card], output: Path, nlp: Language | None = None)
     for card, example_html in zip(cards, examples, strict=True):
         image_html = ""
         if (path := _image_path(card)) is not None:
-            name = _media_name(card, path)
+            name = _media_name(card.key, path.suffix.lower() or ".jpg")
             media[name] = path
             image_html = f'<img src="{name}">'
+        audio_word = _audio_media(card, card.audio.word, "palabra")
+        audio_example = _audio_media(card, card.audio.example, "ejemplo")
+        for item in (audio_word, audio_example):
+            if item:
+                media[item[0]] = item[1]
         deck.add_note(
             genanki.Note(
                 model=MODEL,
-                fields=_fields(card, example_html, image_html),
+                fields=_fields(
+                    card, example_html, image_html, _sound(audio_word), _sound(audio_example)
+                ),
                 guid=note_guid(card),
                 tags=[card.pos],
             )

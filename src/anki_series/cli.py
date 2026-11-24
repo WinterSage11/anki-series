@@ -1,6 +1,6 @@
 """Punto de entrada de la línea de comandos.
 
-Comandos previstos: extract (F1-F2), build (F3), translate (F4), images (F5), all.
+Flujo: extract (F1-F2) → translate (F4) → images (F5) → audio (F6) → build (F3).
 """
 
 import re
@@ -14,6 +14,7 @@ from openai import OpenAI
 from pydantic import TypeAdapter
 
 from anki_series import __version__
+from anki_series.audio import DEFAULT_CONCURRENCY, AudioCache, AudioError, generate_audio
 from anki_series.config import Settings
 from anki_series.deck import build_deck
 from anki_series.images import (
@@ -141,8 +142,12 @@ def build(
 
     with_image = sum(1 for c in cards if c.image.status == ImageStatus.FOUND)
     translated = sum(1 for c in cards if c.translation)
+    with_audio = sum(1 for c in cards if c.audio.word)
     typer.echo(f"Entrada: {input_path}")
-    typer.echo(f"Notas: {len(cards)} · Con traducción: {translated} · Con imagen: {with_image}")
+    typer.echo(
+        f"Notas: {len(cards)} · Con traducción: {translated} · Con imagen: {with_image}"
+        f" · Con audio: {with_audio}"
+    )
     typer.echo(f"Escrito: {path}")
 
 
@@ -310,6 +315,76 @@ def images(
     typer.echo(f"Total con imagen: {with_image}/{len(updated)}")
     if left:
         typer.echo(f"  {left} ilustrables pendientes; vuelve a correr para continuar.")
+    typer.echo(f"Escrito: {output}")
+
+
+@app.command()
+def audio(
+    input_path: Annotated[
+        Path | None,
+        typer.Option("--input", "-i", help="JSON de tarjetas. Default: <data>/output/cards.json."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output", "-o", help="JSON de salida. Default: el mismo de entrada (se actualiza)."
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", min=1, help="Procesa solo N tarjetas sin audio; escribe todas."),
+    ] = None,
+    voice: Annotated[
+        str | None, typer.Option("--voice", help="Voz de edge-tts. Default: TTS_VOICE.")
+    ] = None,
+    concurrency: Annotated[
+        int, typer.Option("--concurrency", min=1, max=16, help="Audios generados en paralelo.")
+    ] = DEFAULT_CONCURRENCY,
+) -> None:
+    """Genera audio .mp3 con voces neuronales (F6): palabra + oración de ejemplo."""
+    settings = Settings()
+    input_path = input_path or settings.data_dir / "output" / "cards.json"
+    output = output or input_path
+    if not input_path.is_file():
+        _fail(FileNotFoundError(f"No existe {input_path}. Corre primero `translate`."))
+
+    cards = _CARDS.validate_json(input_path.read_bytes())
+    voice = voice or settings.tts_voice
+    cache = AudioCache(settings.data_dir / "cache" / "audio")
+
+    def checkpoint(current: list[Card]) -> None:
+        _write_json_atomic(output, current)
+
+    def progress(done: int, total: int, card: Card) -> None:
+        if done % 25 == 0 or done == total:
+            typer.echo(f"  {done}/{total}")
+
+    typer.echo(f"Entrada: {input_path} · Tarjetas: {len(cards)} · Voz: {voice}")
+    try:
+        updated, stats = generate_audio(
+            cards,
+            cache=cache,
+            voice=voice,
+            limit=limit,
+            concurrency=concurrency,
+            checkpoint=checkpoint,
+            on_card=progress,
+        )
+    except AudioError as exc:
+        typer.secho(
+            f"El progreso quedó guardado en {output}; vuelve a correr para continuar.", err=True
+        )
+        _fail(exc)
+
+    _write_json_atomic(output, updated)
+    with_audio = sum(1 for c in updated if c.audio.voice == voice and c.audio.word)
+    typer.echo(
+        f"Procesadas: {len(stats.keys)} · Audios nuevos: {stats.generated}"
+        f" · De caché: {stats.from_cache}"
+    )
+    typer.echo(f"Total con audio ({voice}): {with_audio}/{len(updated)}")
+    if with_audio < len(updated):
+        typer.echo(f"  {len(updated) - with_audio} sin audio; vuelve a correr para continuar.")
     typer.echo(f"Escrito: {output}")
 
 

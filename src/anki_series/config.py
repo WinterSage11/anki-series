@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     openai_api_key: SecretStr | None = None
     openai_model: str = "gpt-4o"
     pixabay_api_key: SecretStr | None = None
+    # Voz neuronal de edge-tts (lista: `uv run edge-tts --list-voices`).
+    tts_voice: str = "en-US-AndrewNeural"
     data_dir: Path = Path("data")
     # Campo del mazo conocido con la palabra en inglés: índice ("1") o nombre ("Palabra").
     known_deck_field: str = "0"
