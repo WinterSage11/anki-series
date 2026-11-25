@@ -11,8 +11,10 @@ from typer.testing import CliRunner
 from anki_series.cli import app
 from anki_series.deck import (
     BACK,
+    CSS,
     FIELDS,
     FRONT,
+    MODEL,
     MODEL_ID,
     build_deck,
     deck_id,
@@ -194,6 +196,28 @@ def test_back_sections_in_order():
     assert positions == sorted(positions)
     for field in ("Image", "AudioWord", "AudioExample", "Translation", "ExampleES"):
         assert f"{{{{#{field}}}}}" in BACK and f"{{{{/{field}}}}}" in BACK  # bloque condicional
+
+
+def test_example_es_hidden_behind_clickable_toggle():
+    block = BACK[BACK.index("{{#ExampleES}}") : BACK.index("{{/ExampleES}}")]
+    toggle = block.index('class="es-toggle"')
+    text = block.index('class="es-text"')
+    assert toggle < block.index(">Traducción<") < text < block.index("{{ExampleES}}")
+    # Al hacer clic: se oculta el botón y se muestra la traducción en su lugar.
+    assert "onclick=\"this.style.display='none';" in block
+    assert "this.nextElementSibling.style.display='inline';" in block
+    # Estado inicial oculto vía CSS (se reinicia solo: Anki vuelve a renderizar el HTML).
+    assert ".es-text { display: none; }" in CSS
+    assert ".es-toggle { cursor: pointer;" in CSS
+    # Sin {{hint:}}, sin <script> global ni ids (no hay estado compartido entre tarjetas).
+    assert "{{hint:" not in BACK and "<script" not in BACK and "id=" not in BACK
+
+
+def test_model_schema_unchanged():
+    assert MODEL.model_id == MODEL_ID == 2104579187
+    assert MODEL.name == "anki-series (EN → ES)"
+    assert [f["name"] for f in MODEL.fields] == FIELDS
+    assert len(FIELDS) == 10
 
 
 def test_templates_have_no_tts_and_hide_metadata():
