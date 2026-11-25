@@ -70,7 +70,14 @@ BACK = """\
       <div class="example">{{ExampleEN}}</div>
       {{#AudioExample}}<div class="audio">{{AudioExample}}</div>{{/AudioExample}}
     </div>
-    {{#ExampleES}}<div class="example-es">{{ExampleES}}</div>{{/ExampleES}}
+    {{#ExampleES}}
+    <div class="example-es">
+      <span class="es-toggle" role="button"
+        onclick="this.style.display='none';this.nextElementSibling.style.display='inline';"
+      >Traducción</span>
+      <span class="es-text">{{ExampleES}}</span>
+    </div>
+    {{/ExampleES}}
   </section>
 </div>
 """
@@ -106,6 +113,8 @@ CSS = """\
 .example { flex: 1; }
 .example b { color: #6d4aff; }
 .example-es { font-style: italic; color: #6e6e73; padding-left: 12px; margin-top: 4px; }
+.es-toggle { cursor: pointer; user-select: none; -webkit-user-select: none; }
+.es-text { display: none; }
 
 .audio .replay-button svg { width: 26px; height: 26px; }
 
