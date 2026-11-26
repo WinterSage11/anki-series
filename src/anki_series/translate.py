@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 from anki_series.models import Card
 
 # Cambiar este número invalida el caché (úsalo si cambias el prompt o el esquema).
-PROMPT_VERSION = 4
+PROMPT_VERSION = 5
 
 SYSTEM_PROMPT = """\
 You help a native Spanish speaker from Mexico learn English vocabulary from TV subtitles.
@@ -39,10 +39,19 @@ and a real sentence from the show where it appears. Return, for every item, usin
   you may add a second common meaning after a comma only if it is very frequent. Slang and
   swear words are kept: give the natural Mexican/LATAM equivalent with the same register,
   never a censored or neutral one.
+  Negative-polarity adverbs and context-dependent particles (anymore, either, yet, ever,
+  at all...) get their meaning from a negation or question elsewhere in the sentence. The
+  translation must still make sense on its own on the card: include that implied polarity
+  (anymore → "ya no, más"; either → "tampoco"; yet → "todavía, aún"; ever →
+  "alguna vez, nunca"), NEVER a fragment that changes meaning out of context (anymore →
+  just "ya" is wrong).
 - example_es: a natural, idiomatic translation of the whole sentence into Mexican/LATAM
   Spanish (not word-for-word), as a Mexican would actually say it (e.g. "I'm running low on
   gas" → "ya casi no tengo gasolina"). It does not need to reuse the word translation.
-  Keep the tone (informal, rude, sarcastic...).
+  Keep the tone (informal, rude, sarcastic...). Casual dialogue must sound like real casual
+  speech, not a robotic literal rendering: use everyday colloquial equivalents ("bros" →
+  "compas" or "carnales", not "hermanos"; "What's up?" → "¿Qué onda?"), natural word
+  order, and avoid stiff or Spain-specific phrasing.
 - imageable: true only if the word itself, with the meaning given in translation, is a
   concrete object, animal, place, person role or physical action that a stock photo can show
   unambiguously (e.g. car, knife, kitchen, police officer, run). Always false for swear words,
