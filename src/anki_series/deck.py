@@ -16,7 +16,8 @@ from pathlib import Path
 import genanki
 from spacy.language import Language
 
-from anki_series.models import Card, ImageStatus
+from anki_series.expressions import find_expression
+from anki_series.models import EXPRESSION_POS, Card, ImageStatus
 from anki_series.vocab import contraction, load_nlp, token_lemma_pos
 
 # Generado una sola vez con random.randrange(1 << 30, 1 << 31). NUNCA cambiarlo: es global
@@ -161,13 +162,17 @@ def highlight_examples(cards: Sequence[Card], nlp: Language | None = None) -> li
     La oración trae la forma flexionada ("runs", "bailed"), así que se vuelve a pasar por
     spaCy y se resaltan los tokens con el mismo lema y POS. Si no hay ninguno (spaCy puede
     etiquetar distinto fuera de contexto), se usa solo el lema; si tampoco, va sin resaltar.
+
+    Expresiones (``pos`` phrasal/idiom): se marcan solo sus palabras con ``find_expression``
+    ("<b>Figure</b> it <b>out</b>"); partes contiguas van en un solo ``<b>`` ("<b>makes
+    sense</b>").
     """
     nlp = nlp or load_nlp()
     docs = nlp.pipe((c.example_en for c in cards), batch_size=256)
     return [_highlight(doc, card) for card, doc in zip(cards, docs, strict=True)]
 
 
-def _highlight(doc, card: Card) -> str:
+def _word_marks(doc, card: Card) -> set[int]:
     # token_lemma_pos corrige contracciones ("gonna" → go/VERB), igual que en vocab.
     keys = {t.i: token_lemma_pos(t) for t in doc}
     same_lemma = {i for i, (lemma, _pos) in keys.items() if lemma == card.lemma}
@@ -176,13 +181,23 @@ def _highlight(doc, card: Card) -> str:
     for i in exact or same_lemma:
         found = contraction(doc[i])
         marked.update(range(i, i + (found[1] if found else 1)))  # "gon" + "na"
+    return marked
+
+
+def _highlight(doc, card: Card) -> str:
+    is_expression = card.pos in EXPRESSION_POS
+    if is_expression:
+        marked = set(find_expression(doc, card.lemma) or [])
+    else:
+        marked = _word_marks(doc, card)
     parts = []
     for token in doc:
         text = html.escape(token.text)
         if token.i in marked:
-            # Tokens marcados pegados (sin espacio) van en un solo <b>: <b>gonna</b>.
-            joined = token.i - 1 in marked and doc[token.i - 1].whitespace_ == ""
-            ends = token.i + 1 not in marked or token.whitespace_ != ""
+            # Tokens marcados pegados (sin espacio) van en un solo <b>: <b>gonna</b>. En una
+            # expresión también los separados por espacio: <b>makes sense</b>.
+            joined = token.i - 1 in marked and (is_expression or doc[token.i - 1].whitespace_ == "")
+            ends = token.i + 1 not in marked or (token.whitespace_ != "" and not is_expression)
             text = ("" if joined else "<b>") + text + ("</b>" if ends else "")
         parts.append(text + token.whitespace_)
     return "".join(parts)

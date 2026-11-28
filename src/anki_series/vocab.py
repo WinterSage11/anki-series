@@ -62,6 +62,12 @@ def load_nlp() -> Language:
     return spacy.load(SPACY_MODEL, disable=["parser"])
 
 
+@lru_cache(maxsize=1)
+def load_nlp_parser() -> Language:
+    """spaCy con parser de dependencias (``prt``): solo para detectar phrasal verbs."""
+    return spacy.load(SPACY_MODEL)
+
+
 # --- Extracción y conteo ---------------------------------------------------------------
 
 
@@ -335,6 +341,32 @@ def known_lemmas_from_words(words: Iterable[str], nlp: Language | None = None) -
     for doc in nlp.pipe(singles, batch_size=512):
         lemmas.update(t.lemma_.lower() for t in doc if not t.is_punct)
     return lemmas
+
+
+# Marcadores que los mazos ponen en expresiones ("figure sth out", "to give up").
+_EXPR_PLACEHOLDERS = {"sth", "smth", "something", "sb", "someone", "somebody", "one's"}
+_PARENS = re.compile(r"\([^)]*\)|\[[^\]]*\]")
+
+
+def known_expressions_from_words(words: Iterable[str], nlp: Language | None = None) -> set[str]:
+    """Expresiones (2+ palabras) del mazo conocido, tal cual y lematizadas.
+
+    "Gave up" → {"gave up", "give up"}; se quitan "to " inicial, paréntesis y marcadores
+    como "sth"/"someone" ("figure (sth) out" → "figure out").
+    """
+    nlp = nlp or load_nlp()
+    entries: set[str] = set()
+    for word in words:
+        text = _PARENS.sub(" ", word.lower())
+        tokens = [t for t in re.findall(r"[a-z]+(?:'[a-z]+)?", text) if t not in _EXPR_PLACEHOLDERS]
+        if tokens[:1] == ["to"]:
+            tokens = tokens[1:]
+        if len(tokens) >= 2:
+            entries.add(" ".join(tokens))
+    found = set(entries)
+    for doc in nlp.pipe(sorted(entries), batch_size=512):
+        found.add(" ".join(t.lemma_.lower() for t in doc))
+    return found
 
 
 def load_known_lemmas(apkg: Path, field: int | str = 0, nlp: Language | None = None) -> set[str]:

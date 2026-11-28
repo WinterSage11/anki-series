@@ -17,10 +17,13 @@ from typing import Any
 import openai
 from pydantic import BaseModel, Field, ValidationError
 
-from anki_series.models import Card
+from anki_series.models import EXPRESSION_POS, Card
 
 # Cambiar este número invalida el caché (úsalo si cambias el prompt o el esquema).
 PROMPT_VERSION = 5
+# Versión aparte para el prompt de expresiones (pos ``phrasal``/``idiom``): cambiarlo solo
+# invalida el caché de expresiones, no el de palabras sueltas.
+EXPRESSION_PROMPT_VERSION = 1
 
 SYSTEM_PROMPT = """\
 You help a native Spanish speaker from Mexico learn English vocabulary from TV subtitles.
@@ -60,6 +63,28 @@ and a real sentence from the show where it appears. Return, for every item, usin
 - image_query: if imageable, a short English search query (1-3 words) for a stock photo site
   that depicts ONLY the word itself, disambiguated for this sense (e.g. "bat" the animal →
   "bat animal flying"); never mix in other objects from the sentence. Otherwise null.
+"""
+
+EXPRESSION_PROMPT = """\
+You help a native Spanish speaker from Mexico learn English expressions from TV subtitles.
+Each item is a multiword expression in base form ("word"), its kind ("pos": "phrasal" for
+phrasal verbs, "idiom" for idioms and set phrases) and a real sentence from the show where
+it appears. Return, for every item, using its same id:
+
+- phrase: always null. phrase_translation: always null.
+- translation: the natural Mexican/LATAM Spanish meaning of the WHOLE expression as used in
+  the sentence, never a word-by-word rendering (figure out → "descifrar, entender";
+  get rid of → "deshacerse de"; make sense → "tener sentido"; no offense → "sin ofender").
+  Phrasal verbs in infinitive. Use 1-4 words; you may add a second common meaning after a
+  comma only if it is very frequent. Slang and swear words keep their register.
+- example_es: a natural, idiomatic translation of the whole sentence into Mexican/LATAM
+  Spanish, as a Mexican would actually say it in casual speech (not word-for-word, no
+  Spain-specific phrasing). Keep the tone (informal, rude, sarcastic...).
+- imageable: true only if the expression is a clear physical action a stock photo can show
+  unambiguously (e.g. pick up, sit down, wake up, run over). False for abstract or mental
+  meanings, feelings, discourse phrases, idioms and slang. When in doubt, false.
+- image_query: if imageable, a short English search query (1-3 words) depicting only that
+  action (e.g. "wake up" → "man waking up bed"). Otherwise null.
 """
 
 RETRYABLE_ERRORS: tuple[type[Exception], ...] = (
@@ -111,7 +136,8 @@ class TranslationCache:
 
     @staticmethod
     def key(card: Card, model: str) -> str:
-        raw = f"v{PROMPT_VERSION}|{model}|{card.lemma}|{card.pos}|{card.example_en}"
+        version = EXPRESSION_PROMPT_VERSION if card.pos in EXPRESSION_POS else PROMPT_VERSION
+        raw = f"v{version}|{model}|{card.lemma}|{card.pos}|{card.example_en}"
         return hashlib.sha1(raw.encode("utf-8")).hexdigest()
 
     def get(self, card: Card, model: str) -> WordTranslation | None:
@@ -135,6 +161,49 @@ class TranslationCache:
 # --- Llamada al modelo ---
 
 
+def parse_with_retries[T: BaseModel](
+    client: Any,
+    model: str,
+    messages: list[dict[str, str]],
+    response_format: type[T],
+    *,
+    error: type[Exception] = RuntimeError,
+    max_retries: int = 3,
+    backoff: float = 2.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> T:
+    """``chat.completions.parse`` con reintentos; devuelve el objeto Pydantic ya validado.
+
+    Reintenta con backoff exponencial (2 s, 4 s, 8 s…) ante errores transitorios
+    (red, timeout, 429, 5xx). Otros errores (API key inválida, 400…), un rechazo del modelo
+    o una respuesta vacía lanzan ``error`` de inmediato. Lo comparten la traducción (F4) y
+    el filtro de expresiones.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            completion = client.chat.completions.parse(
+                model=model,
+                messages=messages,
+                response_format=response_format,
+                temperature=0.2,
+            )
+            break
+        except RETRYABLE_ERRORS as exc:
+            if attempt == max_retries:
+                raise error(f"Error transitorio tras {max_retries + 1} intentos: {exc}") from exc
+            sleep(backoff * 2**attempt)
+        except (openai.OpenAIError, ValidationError) as exc:
+            raise error(f"Error de OpenAI: {exc}") from exc
+
+    message = completion.choices[0].message
+    if getattr(message, "refusal", None):
+        raise error(f"El modelo se negó a responder el lote: {message.refusal}")
+    parsed = message.parsed
+    if parsed is None:
+        raise error("Respuesta vacía o sin el formato esperado.")
+    return parsed
+
+
 def request_batch(
     client: Any,
     model: str,
@@ -146,45 +215,34 @@ def request_batch(
 ) -> dict[int, WordTranslation]:
     """Traduce un lote; devuelve ``{índice en el lote: resultado}``.
 
-    Reintenta con backoff exponencial (2 s, 4 s, 8 s…) ante errores transitorios
-    (red, timeout, 429, 5xx). Otros errores (API key inválida, 400…) fallan de inmediato.
-    Los ids que el modelo omita o invente se ignoran; esas tarjetas quedan sin caché
-    y se reintentan en la siguiente corrida.
+    Un lote es solo de palabras o solo de expresiones (``pos`` en ``EXPRESSION_POS``):
+    cada tipo tiene su prompt. Reintentos: ver ``parse_with_retries``. Los ids que el
+    modelo omita o invente se ignoran; esas tarjetas quedan sin caché y se reintentan en la
+    siguiente corrida.
     """
     items = [
         {"id": i, "word": c.lemma, "pos": c.pos, "sentence": c.example_en}
         for i, c in enumerate(cards)
     ]
+    kinds = {c.pos in EXPRESSION_POS for c in cards}
+    if len(kinds) > 1:
+        raise ValueError("Un lote no puede mezclar palabras y expresiones.")
+    prompt = EXPRESSION_PROMPT if kinds == {True} else SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": prompt},
         {"role": "user", "content": json.dumps({"items": items}, ensure_ascii=False)},
     ]
 
-    for attempt in range(max_retries + 1):
-        try:
-            completion = client.chat.completions.parse(
-                model=model,
-                messages=messages,
-                response_format=TranslationBatch,
-                temperature=0.2,
-            )
-            break
-        except RETRYABLE_ERRORS as exc:
-            if attempt == max_retries:
-                raise TranslationError(
-                    f"Error transitorio tras {max_retries + 1} intentos: {exc}"
-                ) from exc
-            sleep(backoff * 2**attempt)
-        except (openai.OpenAIError, ValidationError) as exc:
-            raise TranslationError(f"Error de OpenAI: {exc}") from exc
-
-    message = completion.choices[0].message
-    if getattr(message, "refusal", None):
-        raise TranslationError(f"El modelo se negó a traducir el lote: {message.refusal}")
-    parsed: TranslationBatch | None = message.parsed
-    if parsed is None:
-        raise TranslationError("Respuesta vacía o sin el formato esperado.")
-
+    parsed = parse_with_retries(
+        client,
+        model,
+        messages,
+        TranslationBatch,
+        error=TranslationError,
+        max_retries=max_retries,
+        backoff=backoff,
+        sleep=sleep,
+    )
     return {item.id: _normalize(item) for item in parsed.items if 0 <= item.id < len(cards)}
 
 
@@ -244,7 +302,11 @@ def translate_cards(
     if pending:
         client = client_factory()
         done = 0
-        for batch in _chunks(pending, batch_size):
+        # Palabras y expresiones van en lotes separados (cada tipo tiene su prompt).
+        words = [c for c in pending if c.pos not in EXPRESSION_POS]
+        expressions = [c for c in pending if c.pos in EXPRESSION_POS]
+        batches = [*_chunks(words, batch_size), *_chunks(expressions, batch_size)]
+        for batch in batches:
             results = request_batch(client, model, batch, **request_kwargs)
             for i, result in results.items():
                 cache.put(batch[i], model, result)

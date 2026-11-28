@@ -10,9 +10,12 @@ import pytest
 from pydantic import TypeAdapter
 from typer.testing import CliRunner
 
-from anki_series import cli
+from anki_series import cli, translate
+from anki_series.expressions import ExpressionBatch, ExpressionVerdict
 from anki_series.models import Card, SourceRef
 from anki_series.translate import (
+    EXPRESSION_PROMPT,
+    SYSTEM_PROMPT,
     TranslationBatch,
     TranslationCache,
     TranslationError,
@@ -45,9 +48,14 @@ def completion(parsed: TranslationBatch | None, refusal: str | None = None) -> S
 class FakeClient:
     """Imita ``client.chat.completions.parse``. Por defecto traduce todo lo que recibe.
 
+    Si se le pide el filtro de expresiones (``ExpressionBatch``), por defecto conserva todo
+    salvo ``DISCARD`` (combinaciones literales), con la pista del parser como ``kind``.
+
     ``script`` es una lista de respuestas/excepciones que se consumen en orden; ``None``
     en el script (o script agotado) = comportamiento por defecto.
     """
+
+    DISCARD = {"sit down"}
 
     def __init__(self, script: list | None = None) -> None:
         self.script = list(script or [])
@@ -62,6 +70,20 @@ class FakeClient:
         if step is not None:
             return step
         items = json.loads(kwargs["messages"][1]["content"])["items"]
+        if kwargs["response_format"] is ExpressionBatch:
+            return completion(
+                ExpressionBatch(
+                    items=[
+                        ExpressionVerdict(
+                            id=it["id"],
+                            keep=it["text"] not in self.DISCARD,
+                            expression=it["text"],
+                            kind="phrasal" if it["hint"] == "phrasal" else "idiom",
+                        )
+                        for it in items
+                    ]
+                )
+            )
         return completion(
             TranslationBatch(
                 items=[
@@ -350,3 +372,42 @@ def test_cli_translate_api_error_fails_cleanly(cli_env: dict, monkeypatch: pytes
     assert result.exit_code == 1
     assert "caché" in result.output
     assert not out.exists()
+
+
+# --- Expresiones: prompt y lotes aparte --------------------------------------------------
+
+
+def test_expressions_use_own_prompt_and_separate_batches(tmp_path: Path):
+    client = FakeClient()
+    cards = [
+        make_card("car"),
+        make_card("figure out", "phrasal", sentence="I'll figure it out."),
+        make_card("bail", "VERB"),
+        make_card("make sense", "idiom", sentence="That makes sense."),
+    ]
+    cache = TranslationCache(tmp_path / "t.json")
+    out, new = translate_cards(
+        cards, cache=cache, model=MODEL, client_factory=lambda: client, batch_size=10
+    )
+    assert new == 4 and len(client.calls) == 2
+    prompts = [c["messages"][0]["content"] for c in client.calls]
+    assert prompts == [SYSTEM_PROMPT, EXPRESSION_PROMPT]
+    sent = [
+        [it["word"] for it in json.loads(c["messages"][1]["content"])["items"]]
+        for c in client.calls
+    ]
+    assert sent == [["car", "bail"], ["figure out", "make sense"]]
+    assert [c.translation for c in out] == ["es-car", "es-figure out", "es-bail", "es-make sense"]
+
+
+def test_expression_cache_version_does_not_touch_word_keys(monkeypatch: pytest.MonkeyPatch):
+    word, expr = make_card("car"), make_card("figure out", "phrasal")
+    before = (TranslationCache.key(word, MODEL), TranslationCache.key(expr, MODEL))
+    monkeypatch.setattr(translate, "EXPRESSION_PROMPT_VERSION", 99)
+    assert TranslationCache.key(word, MODEL) == before[0]
+    assert TranslationCache.key(expr, MODEL) != before[1]
+
+
+def test_request_batch_rejects_mixed_batch():
+    with pytest.raises(ValueError, match="mezclar"):
+        request_batch(FakeClient(), MODEL, [make_card("car"), make_card("give up", "phrasal")])

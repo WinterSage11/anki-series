@@ -8,6 +8,10 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+# ``pos`` de las tarjetas de expresiones multipalabra ("figure out", "make sense"). Las
+# palabras sueltas usan las etiquetas universales de spaCy (NOUN, VERB...).
+EXPRESSION_POS = frozenset({"phrasal", "idiom"})
+
 
 class ImageStatus(StrEnum):
     PENDING = "pending"  # aún no se procesa
@@ -51,7 +55,7 @@ class Sentence(BaseModel):
 class Card(BaseModel):
     series: str
     lemma: str
-    pos: str  # etiqueta universal de spaCy: NOUN, VERB, ADJ, ...
+    pos: str  # etiqueta universal de spaCy (NOUN, VERB...) o phrasal/idiom (expresiones)
     rank: int = Field(ge=1)
     frequency: int = Field(ge=1)
     example_en: str

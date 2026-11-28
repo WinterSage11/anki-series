@@ -42,6 +42,7 @@ uv run anki-series all data/raw/mi-serie/ --series "Mi Serie" \
 | `--top` | 1000 | Cuántos lemas conservar |
 | `--known-deck` / `--known-field` | — / `KNOWN_DECK_FIELD` o `0` | Mazo con palabras que ya conoces |
 | `--exclude-common` | 0 | Excluye las N palabras más frecuentes del inglés (`wordfreq`) |
+| `--expressions` | 0 | Reserva hasta N lugares de `--top` para phrasal verbs y modismos (usa OpenAI) |
 | `--limit` | — | Solo las primeras N palabras en todo el flujo (para probar) |
 | `--model` | `OPENAI_MODEL` | Modelo de OpenAI |
 | `--overrides` | `data/overrides.yaml` | Ajustes manuales de imágenes |
@@ -72,6 +73,8 @@ Opciones de `extract`:
 | `--known-deck` | — | Mazo `.apkg` con palabras que ya conoces; se excluyen sus lemas |
 | `--known-field` | `KNOWN_DECK_FIELD` o `0` | Campo del mazo con la palabra en inglés (índice o nombre). Si el campo no contiene palabras, el error lista los campos disponibles |
 | `--exclude-common` | 0 | Excluye las N palabras más frecuentes del inglés según [wordfreq](https://github.com/rspeer/wordfreq) (p. ej. 500 quita `get`, `go`, `know`, `time`…). 0 = no excluir |
+| `--expressions` | 0 | Reserva hasta N lugares de `--top` para expresiones multipalabra (ver abajo). 0 = solo palabras, sin red |
+| `--model` | `OPENAI_MODEL` | Modelo del filtro de expresiones |
 | `-o/--output` | `data/output/words.json` | Ruta del JSON de salida |
 | `--limit` | 10 | Filas de muestra en pantalla |
 
@@ -83,6 +86,15 @@ Qué se filtra automáticamente:
 - Nombres propios, números, puntuación, stopwords (pronombres, preposiciones…), interjecciones (`yeah`, `oh`, `okay`, `hey`…) y muletillas (`hmm`, `mm-hmm`, `uh`, `um`…). El slang y las groserías se quedan.
 - Nombres de personajes que spaCy a veces etiqueta como sustantivo (`Harvey, you gotta…`): si un lema aparece como nombre propio en más de la mitad de sus apariciones, se descarta. Efecto secundario posible: `mom`/`dad` usados como vocativo.
 - `gonna`, `gotta` y `wanna` cuentan como `go`, `get` y `want` (verbo), y en la tarjeta se resalta la contracción completa.
+
+### Expresiones multipalabra (opcional)
+
+```bash
+# Hasta 50 expresiones + 300 palabras
+uv run anki-series extract data/raw/mi-serie/ --series "Mi Serie" --top 350 --expressions 50
+```
+
+Detecta phrasal verbs con spaCy (`figure out`, también separados: "figure **it** out") y frases frecuentes de 2 a 4 palabras (≥ 3 veces en la serie). Luego OpenAI descarta las combinaciones literales o ruido (`sit down`, `going to the`) y deja solo expresiones con significado propio (`get rid of`, `make sense`, `no offense`), clasificadas como `phrasal` o `idiom`. Requiere `OPENAI_API_KEY`; el resultado se guarda en `data/cache/expressions.json` (en lotes), así que volver a correr no se cobra. Las expresiones se filtran contra `--known-deck` (entradas de varias palabras, p. ej. `give up` o `to figure (sth) out`) pero no contra `--exclude-common`. En la tarjeta se traduce la expresión completa y en el ejemplo se resaltan solo sus palabras (`<b>figure</b> it <b>out</b>`).
 
 ### Traducir (OpenAI)
 

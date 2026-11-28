@@ -105,6 +105,30 @@ def test_example_highlights_whole_contraction():
     assert examples[1] == "You <b>wanna</b> dance?"
 
 
+def test_expressions_highlight_only_their_words():
+    examples = highlight_examples(
+        [
+            card("figure out", "phrasal", "I'll figure it out tomorrow."),
+            card("make sense", "idiom", "That makes sense to me."),
+            card("put up with", "phrasal", "I can't put up with this."),
+            card("no offense", "idiom", "None taken, I guess."),
+        ]
+    )
+    assert examples[0] == "I&#x27;ll <b>figure</b> it <b>out</b> tomorrow."  # sin el pronombre
+    assert examples[1] == "That <b>makes sense</b> to me."
+    assert examples[2] == "I can&#x27;t <b>put up with</b> this."
+    assert "<b>" not in examples[3]
+
+
+def test_expression_card_in_apkg(tmp_path: Path):
+    c = card("figure out", "phrasal", "Can you figure this out?", translation="descifrar")
+    notes = read_apkg(build_deck([c], tmp_path / "x.apkg"), tmp_path)["notes"]
+    [note] = notes.values()
+    assert note["Word"] == "figure out" and note["POS"] == "phrasal"
+    assert note["ExampleEN"] == "Can you <b>figure</b> this <b>out</b>?"
+    assert note["tags"] == ["phrasal"]
+
+
 def test_example_without_match_is_left_plain():
     [example] = highlight_examples([card("bail", "VERB", "Nothing to see here.")])
     assert "<b>" not in example
