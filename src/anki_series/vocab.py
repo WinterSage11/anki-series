@@ -1,7 +1,8 @@
 """Fase 2: vocabulario. Oraciones → top N lemas (lema + POS) con una oración de ejemplo.
 
 Flujo: oraciones (F1) → spaCy (lema, POS, NER) → filtros → conteo por (lema, POS) →
-exclusión de lemas ya conocidos (mazo .apkg local) → ranking → ``Card`` (solo inglés).
+un POS por lema (el más frecuente) → exclusión de lemas ya conocidos (mazo .apkg local) →
+ranking → ``Card`` (solo inglés).
 """
 
 import html
@@ -44,6 +45,13 @@ _CONTRACTIONS = {
     "wanna": ("want", "VERB"),
 }
 _CONTRACTION_SPLITS = {("gon", "na"): "gonna", ("got", "ta"): "gotta", ("wan", "na"): "wanna"}
+# Lematizaciones de spaCy que dan tarjetas confusas, por forma de superficie (minúsculas):
+# "born" → bear/VERB haría "bear → nacer" con "I was born".
+_LEMMA_OVERRIDES = {
+    "born": ("born", "ADJ"),
+}
+# Desempate cuando dos POS de un lema tienen la misma frecuencia (tras el mejor ejemplo).
+_POS_PRIORITY = {"NOUN": 0, "VERB": 1, "ADJ": 2}
 # La stoplist de spaCy (pensada para búsqueda) incluye verbos y sustantivos clave del
 # diálogo: get, go, make, take, say, see, front, side... Solo se aplica fuera de estas
 # categorías, así se van pronombres, auxiliares, preposiciones y "really/very/just".
@@ -101,10 +109,14 @@ def contraction(token) -> tuple[str, int] | None:
 
 
 def token_lemma_pos(token) -> tuple[str, str]:
-    """(lema en minúsculas, POS) corrigiendo contracciones: "gonna" → ("go", "VERB")."""
+    """(lema en minúsculas, POS) corrigiendo contracciones ("gonna" → ("go", "VERB")) y
+    lematizaciones confusas de ``_LEMMA_OVERRIDES`` ("born" → ("born", "ADJ"))."""
     found = contraction(token)
     if found:
         return _CONTRACTIONS[found[0]]
+    override = _LEMMA_OVERRIDES.get(token.text.lower())
+    if override:
+        return override
     return token.lemma_.lower(), token.pos_
 
 
@@ -173,6 +185,28 @@ def count_lemmas(sentences: list[Sentence], nlp: Language | None = None) -> dict
     return {key: c for key, c in candidates.items() if key[0] not in names}
 
 
+def merge_pos(candidates: dict) -> dict:
+    """Deja un solo POS por lema: ``{(lema, pos): _Candidate}`` → mismo formato, 1 por lema.
+
+    Gana el POS más frecuente (así caen falsos positivos de spaCy como ``dude/VERB`` y pares
+    redundantes como ``secret`` ADJ/NOUN). Empate → el POS con mejor ejemplo, luego
+    NOUN > VERB > ADJ > resto alfabético. El ejemplo es el del POS ganador y la frecuencia
+    es la suma de todos los POS del lema (cuenta cada aparición de la palabra).
+    """
+    by_lemma: dict[str, list[tuple[str, _Candidate]]] = {}
+    for (lemma, pos), cand in candidates.items():
+        by_lemma.setdefault(lemma, []).append((pos, cand))
+    merged: dict[tuple[str, str], _Candidate] = {}
+    for lemma, options in by_lemma.items():
+        pos, best = min(
+            options,
+            key=lambda o: (-o[1].frequency, o[1].example_score, _POS_PRIORITY.get(o[0], 3), o[0]),
+        )
+        total = sum(c.frequency for _pos, c in options)
+        merged[(lemma, pos)] = _Candidate(total, best.example, best.example_score)
+    return merged
+
+
 def build_vocabulary(
     sentences: list[Sentence],
     series: str,
@@ -181,13 +215,14 @@ def build_vocabulary(
     known_lemmas: set[str] | None = None,
     nlp: Language | None = None,
 ) -> list[Card]:
-    """Top ``top`` lemas (lema + POS) que no están en ``known_lemmas``, como ``Card``.
+    """Top ``top`` lemas que no están en ``known_lemmas``, como ``Card`` (un POS por lema).
 
-    La exclusión es por lema sin importar el POS: si conoces "store", se quitan
-    ``store/NOUN`` y ``store/VERB``. Orden: frecuencia desc., luego lema y POS (estable).
+    Cada lema sale una sola vez con su POS más frecuente (ver ``merge_pos``). La exclusión
+    es por lema sin importar el POS: si conoces "store", se quitan ``store/NOUN`` y
+    ``store/VERB``. Orden: frecuencia desc., luego lema (estable).
     """
     known = known_lemmas or set()
-    candidates = count_lemmas(sentences, nlp)
+    candidates = merge_pos(count_lemmas(sentences, nlp))
     ranked = sorted(
         ((key, c) for key, c in candidates.items() if key[0] not in known),
         key=lambda item: (-item[1].frequency, item[0][0], item[0][1]),

@@ -6,12 +6,15 @@ from apkg_factory import make_apkg
 from anki_series.models import Sentence, SourceRef
 from anki_series.vocab import (
     KnownDeckError,
+    _Candidate,
+    _example_score,
     build_vocabulary,
     common_words,
     count_lemmas,
     is_filler,
     known_lemmas_from_words,
     load_known_lemmas,
+    merge_pos,
     read_known_words,
     strip_html,
 )
@@ -31,14 +34,58 @@ def keys(cards) -> list[tuple[str, str]]:
 # --- Conteo y filtros ------------------------------------------------------------------
 
 
-def test_lemma_and_pos_are_separate_cards():
-    cards = build_vocabulary(
-        sents("I run every morning before work.", "That was a long run.", "She runs fast."),
-        "S",
+def test_one_card_per_lemma_with_most_frequent_pos():
+    texts = ("I run every morning before work.", "That was a long run.", "She runs fast.")
+    counts = count_lemmas(sents(*texts))
+    assert counts[("run", "VERB")].frequency == 2  # run + runs → mismo lema
+    assert counts[("run", "NOUN")].frequency == 1
+    cards = build_vocabulary(sents(*texts), "S")
+    run = [c for c in cards if c.lemma == "run"]
+    assert len(run) == 1
+    assert run[0].pos == "VERB"
+    assert run[0].frequency == 3  # suma de todos los POS del lema
+    assert run[0].example_en in {texts[0], texts[2]}  # ejemplo del POS ganador
+
+
+def cand(frequency: int, text: str) -> _Candidate:
+    sentence = sents(text)[0]
+    return _Candidate(frequency, sentence, _example_score(sentence))
+
+
+def test_merge_pos_keeps_example_of_winning_pos():
+    merged = merge_pos(
+        {
+            ("secret", "ADJ"): cand(1, "It is a secret plan, okay, nobody knows it."),
+            ("secret", "NOUN"): cand(2, "Can you keep a secret?"),
+        }
     )
+    assert list(merged) == [("secret", "NOUN")]
+    assert merged[("secret", "NOUN")].frequency == 3
+    assert merged[("secret", "NOUN")].example.text == "Can you keep a secret?"
+
+
+def test_merge_pos_tie_prefers_better_example():
+    ideal = "You should not call that dude after midnight, seriously man."  # 10 palabras
+    merged = merge_pos({("dude", "NOUN"): cand(1, "Hey dude!"), ("dude", "VERB"): cand(1, ideal)})
+    assert list(merged) == [("dude", "VERB")]
+    assert merged[("dude", "VERB")].example.text == ideal
+
+
+def test_merge_pos_full_tie_uses_pos_priority():
+    text = "Can you keep a secret for me, please, my friend?"
+    options = {("secret", pos): cand(1, text) for pos in ("ADV", "ADJ", "VERB", "NOUN")}
+    assert list(merge_pos(options)) == [("secret", "NOUN")]
+    del options[("secret", "NOUN")]
+    assert list(merge_pos(options)) == [("secret", "VERB")]
+    del options[("secret", "VERB")]
+    assert list(merge_pos(options)) == [("secret", "ADJ")]
+
+
+def test_born_is_not_lemmatized_as_bear():
+    cards = build_vocabulary(sents("I was born in a small town.", "She was born there."), "S")
     found = {(c.lemma, c.pos): c.frequency for c in cards}
-    assert found[("run", "VERB")] == 2  # run + runs → mismo lema
-    assert found[("run", "NOUN")] == 1
+    assert found[("born", "ADJ")] == 2
+    assert "bear" not in {c.lemma for c in cards}
 
 
 def test_filters_names_stopwords_numbers_and_punctuation():
