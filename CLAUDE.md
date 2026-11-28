@@ -28,7 +28,10 @@ src/anki_series/
   images.py     # (F5) Pixabay + Pillow
   audio.py      # (F6) edge-tts (voces neuronales) + caché
 tests/          # pytest; fixtures inventados en tests/fixtures/, .apkg sintéticos con tests/apkg_factory.py
-data/           # NO versionado: raw/, cache/, output/, known/
+docs/           # USER_GUIDE.md (manual completo) + assets/ (capturas de tarjetas para el README)
+examples/       # sample.srt sintético para el demo offline (extract + build sin API keys)
+.github/workflows/ci.yml  # CI: uv sync --locked, pytest, ruff check, ruff format --check
+data/           # NO versionado: raw/, cache/, output/, known/ (el demo escribe en data/demo/)
 ```
 Cada etapa lee/escribe JSON intermedio en `data/output/` (`words.json` → `cards.json` → `.apkg`) para poder inspeccionar y re-ejecutar cada fase por separado.
 
@@ -58,7 +61,9 @@ Cada etapa lee/escribe JSON intermedio en `data/output/` (`words.json` → `card
 
 ## Convenciones
 - Python ≥ 3.12, type hints en funciones públicas, `ruff` (line-length 100).
-- Código, identificadores y commits en inglés; docs (README, CLAUDE.md) en español.
+- Código, identificadores y commits en inglés; `README.md` y `docs/USER_GUIDE.md` en inglés (portafolio); CLAUDE.md en español.
+- **Docs sincronizadas**: al agregar, quitar o cambiar un comando, flag o default del CLI (`cli.py`), actualizar en el mismo PR la tabla de flags de `docs/USER_GUIDE.md` y, si cambia el Quickstart, `README.md`. Si cambia el número de tests de forma relevante, actualizar la cifra del README.
+- **CI** (`.github/workflows/ci.yml`) corre `pytest`, `ruff check` y `ruff format --check` en cada push/PR; no mergear con CI en rojo. El modelo de spaCy viene como dependencia en `pyproject.toml`, así que el CI no necesita `spacy download`.
 - **Conventional Commits**: `feat:`, `fix:`, `test:`, `refactor:`, `docs:`, `chore:`.
 - Una rama por fase (`feat/phase-1-subtitles`) con PR hacia `main`. Repo GitHub privado.
 - No hacer commits ni push sin confirmación explícita del usuario.

@@ -1,218 +1,91 @@
 # anki-series
 
-Herramienta de línea de comandos que toma los subtítulos (`.srt`) en inglés de una serie y genera un mazo de Anki (`.apkg`) con:
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/)
+[![CI](https://github.com/WinterSage11/anki-series/actions/workflows/ci.yml/badge.svg)](https://github.com/WinterSage11/anki-series/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-- Las 1,000 palabras más usadas (lema + categoría gramatical).
-- Una oración real de la serie como ejemplo.
-- Traducción al español de México/LATAM considerando el contexto de la oración.
-- Una imagen cuando aporta valor (empaquetada dentro del `.apkg`).
-- Audio con voz neuronal de la palabra y de la oración (empaquetado dentro del `.apkg`).
+A Python CLI that turns the English `.srt` subtitles of a TV series into a ready-to-import Anki deck (`.apkg`).
+It picks the most frequent lemmas and multiword expressions, attaches a real line from the show, translates it in context to Mexican/Latin American Spanish, and bundles images and neural-voice audio into the deck.
 
-> Estado: **Fase 7** (vocabulario → `words.json` → traducción con OpenAI → `cards.json` → imágenes de Pixabay → audio con edge-tts → mazo `.apkg`, todo con un solo comando `all`). Ver el plan de fases en [CLAUDE.md](CLAUDE.md).
+| Front | Back |
+|---|---|
+| ![Card front](docs/assets/card-front.png) | ![Card back](docs/assets/card-back.png) |
 
-## Requisitos
+## Architecture
 
-- [uv](https://docs.astral.sh/uv/)
-- Python 3.12 (uv lo instala si no lo tienes)
+A hybrid pipeline: deterministic NLP does the counting and filtering (cheap, reproducible), and the LLM is used only where context matters (translation and judging idioms). Every stage writes inspectable JSON and can be re-run on its own.
 
-## Instalación
+```mermaid
+flowchart LR
+    A[".srt file / folder"] --> B["subtitles.py<br/>clean lines, drop credits"]
+    B --> C["vocab.py · expressions.py<br/>spaCy lemma+POS · wordfreq<br/>known-deck exclusion"]
+    C -->|words.json| D["translate.py<br/>GPT-4o Structured Outputs<br/>(Pydantic schemas)"]
+    D <--> K[("atomic JSON cache<br/>data/cache/")]
+    D -->|cards.json| E["images.py<br/>Pixabay + Pillow"]
+    D -->|cards.json| F["audio.py<br/>edge-tts neural voices"]
+    E --> G["deck.py<br/>genanki · stable GUIDs"]
+    F --> G
+    G --> H[".apkg"]
+```
+
+## Results (real run)
+
+One full season run (*How I Met Your Mother*, S04; subtitles not included in the repo):
+
+| Metric | Value |
+|---|---|
+| Clean subtitle sentences | 10,336 |
+| Cards generated | 350 (309 words + 41 expressions) |
+| OpenAI calls on re-run (warm cache) | 0 |
+| Test suite | 253 tests, fully offline (OpenAI, Pixabay and TTS mocked) |
+
+## Engineering decisions
+
+- **Hybrid NLP + LLM.** spaCy (`en_core_web_sm`) and `wordfreq` handle lemmatization, POS, frequency and filtering (proper nouns, interjections, fillers, stopwords) deterministically. GPT-4o is only called for contextual translation and to judge whether a multiword candidate is a real idiom — the expensive model never sees text a rule could handle.
+- **Cost control with atomic, versioned caches.** Every LLM result is cached in `data/cache/` with a key of `prompt version + model + input`, saved atomically (temp file + `replace`) after each batch, so a crash or `Ctrl+C` never loses paid work. Three independent version constants — `PROMPT_VERSION` (word translation), `EXPRESSION_PROMPT_VERSION` (expression translation) and `EXPR_FILTER_VERSION` (idiom filter) — let one prompt change without invalidating the other caches.
+- **Batched Structured Outputs.** `chat.completions.parse` with Pydantic response models gives typed, validated results. Translation runs in batches of 20 cards; the idiom filter runs in batches of 80 candidates. Field order in the schema is deliberate: the model writes `phrase` / `phrase_translation` before `translation`, so a phrasal verb in the example doesn't leak into the single-word translation.
+- **Real NLP bugs, fixed with tests.**
+  - *Phrasal verbs crowded out by noise:* frequent n-grams filled the whole candidate pool, so the 400-candidate cap (`MAX_CANDIDATES`) now reserves a separate budget of 200 for phrasal verbs (`MAX_PHRASAL_CANDIDATES`).
+  - *Duplicate cards from POS noise:* spaCy tagged `dude` as a verb now and then, producing near-duplicate notes. `vocab.merge_pos` keeps a single POS per lemma (the most frequent), summing frequencies.
+  - *Wrong lemma:* spaCy lemmatizes `born` as `bear/VERB`; a surface-form override maps it to `born/ADJ`, applied both in counting and in highlighting.
+- **Safe re-imports.** The genanki model ID is a fixed constant, deck IDs are derived from the series name and note GUIDs from `(series, lemma, POS)`, so importing a regenerated deck updates existing notes and keeps study progress. Media file names are content-hashed because Anki's media folder is global.
+
+## Quickstart
+
+Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.12 and the spaCy model for you).
 
 ```bash
+git clone https://github.com/WinterSage11/anki-series.git && cd anki-series
 uv sync
-cp .env.example .env   # y llena OPENAI_API_KEY y PIXABAY_API_KEY
 ```
 
-## Uso rápido: todo en un comando
+**Offline demo (~10 seconds, no API keys)** — builds a deck skeleton (English only) from a synthetic subtitle file:
 
 ```bash
-# Prueba barata: solo 20 palabras en todo el flujo
-uv run anki-series all data/raw/mi-serie/ --series "Mi Serie" --exclude-common 500 --limit 20
-
-# Completo: un archivo o una carpeta con todos los .srt de la temporada/serie
-uv run anki-series all data/raw/mi-serie/ --series "Mi Serie" \
-    --known-deck data/known/mi-mazo.apkg --known-field Palabra --exclude-common 500
-# → data/output/mi-serie.apkg
+uv run anki-series extract examples/sample.srt --series "Demo" --top 30 -o data/demo/words.json
+uv run anki-series build -i data/demo/words.json -o data/demo/demo.apkg
 ```
 
-`all` corre `extract → translate → images → audio → build` con las rutas por default de `data/output/`. Cada etapa usa su caché, así que si algo falla (red, API key, límite de uso) se detiene ahí: corrige y vuelve a correr el mismo comando; lo ya hecho no se repite ni se vuelve a cobrar.
-
-| Opción | Default | Qué hace |
-|---|---|---|
-| `--series` | — (obligatorio) | Nombre de la serie (define el mazo y el GUID de las notas) |
-| `--top` | 1000 | Cuántos lemas conservar |
-| `--known-deck` / `--known-field` | — / `KNOWN_DECK_FIELD` o `0` | Mazo con palabras que ya conoces |
-| `--exclude-common` | 0 | Excluye las N palabras más frecuentes del inglés (`wordfreq`) |
-| `--expressions` | 0 | Reserva hasta N lugares de `--top` para phrasal verbs y modismos (usa OpenAI) |
-| `--limit` | — | Solo las primeras N palabras en todo el flujo (para probar) |
-| `--model` | `OPENAI_MODEL` | Modelo de OpenAI |
-| `--overrides` | `data/overrides.yaml` | Ajustes manuales de imágenes |
-| `--voice` | `TTS_VOICE` | Voz de edge-tts |
-| `--concurrency` | 4 | Audios generados en paralelo |
-
-## Etapas por separado
-
-Útil para inspeccionar o re-ejecutar una sola fase:
+**Full pipeline** (needs `OPENAI_API_KEY` and `PIXABAY_API_KEY` in `.env`):
 
 ```bash
-uv run anki-series version
-
-# Vista previa de las oraciones limpias que se extraen (no escribe nada)
-uv run anki-series extract data/raw/mi-serie/ --series "Mi Serie" --dry-run --limit 20
-
-# Vocabulario: top 1,000 lemas (lema + categoría) con oración de ejemplo
-# → data/output/words.json
-uv run anki-series extract data/raw/mi-serie/ --series "Mi Serie" \
-    --known-deck data/known/mi-mazo.apkg --known-field Palabra
+cp .env.example .env
+uv run anki-series all data/raw/my-show/ --series "My Show" --top 350 --expressions 50 --exclude-common 500
+# → data/output/my-show.apkg
 ```
 
-Opciones de `extract`:
+See the **[User Guide](docs/USER_GUIDE.md)** for every command, flag, the cache and how to import/update the deck in Anki.
 
-| Opción | Default | Qué hace |
-|---|---|---|
-| `--top` | 1000 | Cuántos lemas conservar |
-| `--known-deck` | — | Mazo `.apkg` con palabras que ya conoces; se excluyen sus lemas |
-| `--known-field` | `KNOWN_DECK_FIELD` o `0` | Campo del mazo con la palabra en inglés (índice o nombre). Si el campo no contiene palabras, el error lista los campos disponibles |
-| `--exclude-common` | 0 | Excluye las N palabras más frecuentes del inglés según [wordfreq](https://github.com/rspeer/wordfreq) (p. ej. 500 quita `get`, `go`, `know`, `time`…). 0 = no excluir |
-| `--expressions` | 0 | Reserva hasta N lugares de `--top` para expresiones multipalabra (ver abajo). 0 = solo palabras, sin red |
-| `--model` | `OPENAI_MODEL` | Modelo del filtro de expresiones |
-| `-o/--output` | `data/output/words.json` | Ruta del JSON de salida |
-| `--limit` | 10 | Filas de muestra en pantalla |
-
-Para no repetir `--known-field`, ponlo en `.env` (p. ej. `KNOWN_DECK_FIELD=Palabra`).
-
-Qué se filtra automáticamente:
-
-- Créditos de quien hizo los subtítulos (`== sync, corrected by … ==`, `Subtitles by …`, OpenSubtitles, Addic7ed, URLs).
-- Nombres propios, números, puntuación, stopwords (pronombres, preposiciones…), interjecciones (`yeah`, `oh`, `okay`, `hey`…) y muletillas (`hmm`, `mm-hmm`, `uh`, `um`…). El slang y las groserías se quedan.
-- Nombres de personajes que spaCy a veces etiqueta como sustantivo (`Harvey, you gotta…`): si un lema aparece como nombre propio en más de la mitad de sus apariciones, se descarta. Efecto secundario posible: `mom`/`dad` usados como vocativo.
-- `gonna`, `gotta` y `wanna` cuentan como `go`, `get` y `want` (verbo), y en la tarjeta se resalta la contracción completa.
-
-### Expresiones multipalabra (opcional)
+## Development
 
 ```bash
-# Hasta 50 expresiones + 300 palabras
-uv run anki-series extract data/raw/mi-serie/ --series "Mi Serie" --top 350 --expressions 50
-```
-
-Detecta phrasal verbs con spaCy (`figure out`, también separados: "figure **it** out") y frases frecuentes de 2 a 4 palabras (≥ 3 veces en la serie). Luego OpenAI descarta las combinaciones literales o ruido (`sit down`, `going to the`) y deja solo expresiones con significado propio (`get rid of`, `make sense`, `no offense`), clasificadas como `phrasal` o `idiom`. Requiere `OPENAI_API_KEY`; el resultado se guarda en `data/cache/expressions.json` (en lotes), así que volver a correr no se cobra. Las expresiones se filtran contra `--known-deck` (entradas de varias palabras, p. ej. `give up` o `to figure (sth) out`) pero no contra `--exclude-common`. En la tarjeta se traduce la expresión completa y en el ejemplo se resaltan solo sus palabras (`<b>figure</b> it <b>out</b>`).
-
-### Traducir (OpenAI)
-
-Requiere `OPENAI_API_KEY` en `.env` (y opcionalmente `OPENAI_MODEL`, default `gpt-4o`).
-
-```bash
-# Prueba barata con 10 tarjetas → data/output/cards.json (solo esas 10)
-uv run anki-series translate --limit 10
-
-# Todo words.json → data/output/cards.json
-uv run anki-series translate
-```
-
-Por cada palabra el modelo devuelve, en español de México/LATAM y considerando la oración de la serie: la traducción de la palabra, la traducción natural de la oración, si la palabra es ilustrable con una foto y la búsqueda en inglés para la imagen (Fase 5).
-
-| Opción | Default | Qué hace |
-|---|---|---|
-| `-i/--input` | `data/output/words.json` | JSON de entrada |
-| `-o/--output` | `data/output/cards.json` | JSON de salida (el que usa `build`) |
-| `--limit` | — | Solo las primeras N tarjetas (y escribe solo esas) |
-| `--batch-size` | 20 | Tarjetas por llamada a la API |
-| `--model` | `OPENAI_MODEL` | Modelo a usar en esta corrida |
-
-**Caché**: cada lote se guarda en `data/cache/translations.json` al terminar. Si el proceso se interrumpe o falla, vuelve a correr el mismo comando: solo se piden los lotes que faltan. Cambiar el modelo o la oración de ejemplo genera una traducción nueva. Los errores transitorios (red, timeout, límite de uso, 5xx) se reintentan hasta 3 veces con espera creciente.
-
-### Imágenes (Pixabay)
-
-Requiere `PIXABAY_API_KEY` en `.env` ([obtenla aquí](https://pixabay.com/api/docs/)) y haber corrido `translate` (el modelo decide qué palabras son ilustrables y con qué búsqueda).
-
-```bash
-# Prueba con 10 tarjetas (actualiza data/output/cards.json; las demás quedan pendientes)
-uv run anki-series images --limit 10
-
-# Todas las pendientes
-uv run anki-series images
-```
-
-- Solo se buscan las palabras concretas (`imageable`); las demás quedan "omitidas".
-- Si Pixabay no devuelve un resultado cuyos tags coincidan con la búsqueda, la tarjeta queda **sin imagen** (mejor eso que una foto engañosa).
-- Las imágenes se reducen a máx. 400 px (JPEG) y se guardan en `data/cache/images/`. Una búsqueda ya hecha no vuelve a llamar a la API.
-- Si se interrumpe, vuelve a correr el mismo comando: el progreso se guarda cada 10 tarjetas.
-- Los créditos (autor + página de Pixabay) quedan en la metadata de la nota, no en la tarjeta.
-
-| Opción | Default | Qué hace |
-|---|---|---|
-| `-i/--input` | `data/output/cards.json` | JSON de entrada |
-| `-o/--output` | el mismo de entrada | JSON de salida |
-| `--limit` | — | Procesa solo N tarjetas (escribe todas) |
-| `--overrides` | `data/overrides.yaml` | Ajustes manuales |
-
-**Ajustes manuales** (`data/overrides.yaml`): la llave es `lema` (todas sus categorías) o `lema/POS` (solo esa tarjeta; gana sobre `lema`). Cada entrada lleva exactamente una opción:
-
-```yaml
-bat/NOUN:
-  query: bat animal flying        # otra búsqueda en Pixabay
-knife:
-  image: data/overrides/knife.jpg # imagen propia (ruta relativa al proyecto)
-damn:
-  skip: true                      # sin imagen
-```
-
-Los overrides se aplican en cada corrida, aunque la tarjeta ya tenga imagen.
-
-### Audio (voces neuronales)
-
-Usa [edge-tts](https://github.com/rany2/edge-tts) (voces neuronales de Microsoft Edge; no requiere API key, sí conexión a internet). Por cada tarjeta genera dos `.mp3`: la palabra y la oración de ejemplo en inglés.
-
-```bash
-# Prueba con 10 tarjetas (actualiza data/output/cards.json)
-uv run anki-series audio --limit 10
-
-# Todas, con otra voz
-uv run anki-series audio --voice en-US-AriaNeural
-
-# Ver las voces disponibles
-uv run edge-tts --list-voices | grep en-US
-```
-
-- La voz por default es `TTS_VOICE` (en `.env`; default `en-US-AndrewNeural`).
-- Los audios se guardan en `data/cache/audio/` con un nombre que depende de (voz, texto): el mismo texto con la misma voz nunca se vuelve a generar. Cambiar de voz genera audios nuevos; para regenerar uno, borra su `.mp3`.
-- Se generan varios audios en paralelo (`--concurrency`, default 4). Los errores de red o del servicio se reintentan hasta 3 veces con espera creciente.
-- Si se interrumpe, vuelve a correr el mismo comando: el progreso se guarda cada 10 tarjetas.
-
-| Opción | Default | Qué hace |
-|---|---|---|
-| `-i/--input` | `data/output/cards.json` | JSON de entrada |
-| `-o/--output` | el mismo de entrada | JSON de salida |
-| `--limit` | — | Procesa solo N tarjetas sin audio (escribe todas) |
-| `--voice` | `TTS_VOICE` | Voz de edge-tts |
-| `--concurrency` | 4 | Audios generados en paralelo |
-
-### Construir el mazo
-
-```bash
-# Lee data/output/cards.json (si existe) o words.json → data/output/mi-serie.apkg
-uv run anki-series build
-
-# Rutas explícitas
-uv run anki-series build -i data/output/words.json -o data/output/mi-serie.apkg
-```
-
-Cada tarjeta (inglés → español) tiene:
-
-- **Frente**: solo la palabra y su categoría (+ botón de audio arriba a la derecha, si corriste `audio`).
-- **Reverso**: palabra + audio, traducción (vacía si no corriste `translate`), imagen centrada (si corriste `images` y se encontró una) y la oración de la serie con la palabra resaltada, su audio y la traducción en cursiva.
-- **Audio**: si corriste `audio`, los `.mp3` de la palabra y de la oración van dentro del `.apkg` (con nombres únicos `anki-series-<hash>.mp3`); si no, los botones no aparecen. No se usa el TTS nativo del sistema (sonaba mal).
-- **Metadata oculta**: créditos de la imagen y archivo/timestamp de origen.
-
-Volver a importar un `.apkg` regenerado **actualiza** las notas existentes en lugar de duplicarlas (el GUID depende solo de serie + lema + categoría). Tu progreso de estudio se conserva.
-
-## Desarrollo
-
-```bash
-uv run pytest
+uv run pytest              # 253 offline tests
 uv run ruff check .
-uv run ruff format .
+uv run ruff format --check .
 ```
 
-## Uso de los datos
+CI runs the same three checks on every push and pull request ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
-Los subtítulos y videos tienen copyright: viven en `data/` (ignorado por git) y no se suben al repositorio. Las imágenes provienen de Pixabay, cuya licencia permite redistribuirlas; el mazo está pensado para uso personal y para compartir con amigos cercanos.
+## Data & licensing
+
+Subtitles are copyrighted: they live in `data/` (git-ignored) and are never committed; test fixtures and `examples/sample.srt` are invented dialogue. Images come from Pixabay (redistributable license; credits stored in hidden note metadata). Decks are meant for personal use. Code is released under the [MIT License](LICENSE).

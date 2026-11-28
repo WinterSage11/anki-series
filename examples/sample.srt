@@ -1,0 +1,99 @@
+1
+00:00:01,000 --> 00:00:03,200
+Morning, Sam. Did you finally fix the coffee machine?
+
+2
+00:00:03,400 --> 00:00:06,100
+I tried, but it keeps making that weird noise.
+
+3
+00:00:06,300 --> 00:00:09,000
+We need to figure out what's wrong before the meeting.
+
+4
+00:00:09,200 --> 00:00:11,800
+Relax, I'm gonna call the repair guy after lunch.
+
+5
+00:00:12,000 --> 00:00:14,600
+You always say that, and then you forget to call.
+
+6
+00:00:14,800 --> 00:00:17,500
+Okay, fine. I'll call him right now. Happy?
+
+7
+00:00:17,700 --> 00:00:20,300
+Very happy. Now help me set up the projector.
+
+8
+00:00:20,500 --> 00:00:23,400
+The cable is too short. We need a longer cable.
+
+9
+00:00:23,600 --> 00:00:26,200
+Check the drawer under the window. There's a spare one.
+
+10
+00:00:26,400 --> 00:00:29,100
+Found it! This cable is long enough for the whole room.
+
+11
+00:00:29,300 --> 00:00:32,000
+Great. Did you finish the report for the client?
+
+12
+00:00:32,200 --> 00:00:35,000
+Almost. I still have to check the numbers one more time.
+
+13
+00:00:35,200 --> 00:00:38,100
+The client is coming at ten, so don't give up now.
+
+14
+00:00:38,300 --> 00:00:41,000
+I won't give up. I just need another cup of coffee.
+
+15
+00:00:41,200 --> 00:00:44,000
+Too bad the coffee machine is still broken.
+
+16
+00:00:44,200 --> 00:00:47,300
+Then I'll buy coffee at the shop across the street.
+
+17
+00:00:47,500 --> 00:00:50,100
+Buy one for me too. I'm falling asleep at my desk.
+
+18
+00:00:50,300 --> 00:00:53,200
+Deal. Can you look after the projector while I'm gone?
+
+19
+00:00:53,400 --> 00:00:56,000
+Sure. I'll test the slides and check the sound.
+
+20
+00:00:56,200 --> 00:00:59,100
+If the client asks about the budget, tell them I'll call back.
+
+21
+00:00:59,300 --> 00:01:02,000
+Don't worry. I can handle a few questions about the budget.
+
+22
+00:01:02,200 --> 00:01:05,100
+You're the best. Let's figure out the rest after the meeting.
+
+23
+00:01:05,300 --> 00:01:08,000
+Wait, the repair guy just called. He's coming this afternoon.
+
+24
+00:01:08,200 --> 00:01:11,000
+Finally! Maybe tomorrow we'll have real coffee again.
+
+25
+00:01:11,200 --> 00:01:14,000
+Don't get your hopes up. That machine is older than me.
