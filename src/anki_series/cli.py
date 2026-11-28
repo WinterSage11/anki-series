@@ -17,6 +17,14 @@ from anki_series import __version__
 from anki_series.audio import DEFAULT_CONCURRENCY, AudioCache, AudioError, generate_audio
 from anki_series.config import Settings
 from anki_series.deck import build_deck
+from anki_series.expressions import (
+    ExpressionCache,
+    ExpressionError,
+    collect_candidates,
+    filter_candidates,
+    merge_ranked,
+    select_expressions,
+)
 from anki_series.images import (
     ImageCache,
     ImageError,
@@ -32,7 +40,9 @@ from anki_series.vocab import (
     KnownDeckError,
     build_vocabulary,
     common_words,
-    load_known_lemmas,
+    known_expressions_from_words,
+    known_lemmas_from_words,
+    read_known_words,
 )
 
 app = typer.Typer(help="Genera mazos de Anki a partir de subtítulos de una serie.")
@@ -82,6 +92,19 @@ def extract(
             help="Excluye las N palabras más frecuentes del inglés (wordfreq). 0 = no excluir.",
         ),
     ] = 0,
+    expressions: Annotated[
+        int,
+        typer.Option(
+            "--expressions",
+            min=0,
+            help="Reserva hasta N lugares de --top para phrasal verbs y modismos (usa OpenAI)."
+            " 0 = solo palabras, sin red.",
+        ),
+    ] = 0,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Modelo del filtro de expresiones. Default: OPENAI_MODEL."),
+    ] = None,
     output: Annotated[
         Path | None,
         typer.Option("--output", "-o", help="Ruta del JSON. Default: <data>/output/words.json."),
@@ -99,23 +122,36 @@ def extract(
 
     settings = Settings()
     known: set[str] = set()
+    known_expr: set[str] = set()
     if known_deck is not None:
         field = known_field if known_field is not None else settings.known_deck_field
         try:
-            known = load_known_lemmas(known_deck, field)
+            known_words = read_known_words(known_deck, field)
         except (FileNotFoundError, KnownDeckError) as exc:
             _fail(exc)
+        known = known_lemmas_from_words(known_words)
+        known_expr = known_expressions_from_words(known_words)
         typer.echo(f"Mazo conocido: {known_deck.name} · {len(known)} formas/lemas a excluir")
     if exclude_common:
+        # Solo palabras sueltas: las expresiones no pasan por wordfreq.
         known |= common_words(exclude_common)
         typer.echo(f"Palabras comunes excluidas (wordfreq): top {exclude_common}")
 
-    cards = build_vocabulary(sentences, series, top=top, known_lemmas=known)
+    expr_cards: list[Card] = []
+    if expressions:
+        expr_cards = _extract_expressions(
+            sentences, series, settings, limit=min(expressions, top), known=known_expr, model=model
+        )
+    words = build_vocabulary(sentences, series, top=top - len(expr_cards), known_lemmas=known)
+    cards = merge_ranked(words, expr_cards) if expr_cards else words
     path = output or settings.data_dir / "output" / "words.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_CARDS.dump_json(cards, indent=2))
 
-    typer.echo(f"Serie: {series} · Oraciones: {len(sentences)} · Lemas: {len(cards)}")
+    summary = f"Serie: {series} · Oraciones: {len(sentences)} · Lemas: {len(words)}"
+    if expressions:
+        summary += f" · Expresiones: {len(expr_cards)}"
+    typer.echo(summary)
     typer.echo(f"Escrito: {path}")
     for card in cards[:limit]:
         typer.echo(
@@ -204,11 +240,7 @@ def translate(
     cache = TranslationCache(settings.data_dir / "cache" / "translations.json")
 
     def client_factory() -> OpenAI:
-        key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else ""
-        if not key:
-            _fail(ValueError("Falta OPENAI_API_KEY (ponla en .env)."))
-        # max_retries=0: los reintentos los maneja translate.request_batch.
-        return OpenAI(api_key=key, max_retries=0)
+        return _openai_client(settings)
 
     def progress(done: int, total: int) -> None:
         typer.echo(f"  lote listo: {done}/{total}")
@@ -425,6 +457,12 @@ def run_all(
             "--exclude-common", min=0, help="Excluye las N palabras más frecuentes del inglés."
         ),
     ] = 0,
+    expressions: Annotated[
+        int,
+        typer.Option(
+            "--expressions", min=0, help="Reserva hasta N lugares de --top para expresiones."
+        ),
+    ] = 0,
     limit: Annotated[
         int | None,
         typer.Option(
@@ -464,6 +502,8 @@ def run_all(
         known_deck=known_deck,
         known_field=known_field,
         exclude_common=exclude_common,
+        expressions=expressions,
+        model=model,
         output=None,
     )
     step(2)
@@ -479,6 +519,48 @@ def run_all(
 
 
 _CARDS = TypeAdapter(list[Card])
+
+
+def _openai_client(settings: Settings) -> OpenAI:
+    key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else ""
+    if not key:
+        _fail(ValueError("Falta OPENAI_API_KEY (ponla en .env)."))
+    # max_retries=0: los reintentos los maneja translate.parse_with_retries.
+    return OpenAI(api_key=key, max_retries=0)
+
+
+def _extract_expressions(
+    sentences: list[Sentence],
+    series: str,
+    settings: Settings,
+    *,
+    limit: int,
+    known: set[str],
+    model: str | None,
+) -> list[Card]:
+    """Candidatos (spaCy) → filtro OpenAI con caché → hasta ``limit`` tarjetas."""
+    model = model or settings.openai_model
+    candidates = collect_candidates(sentences)
+    cache = ExpressionCache(settings.data_dir / "cache" / "expressions.json")
+
+    def progress(done: int, total: int) -> None:
+        typer.echo(f"  filtro de expresiones: {done}/{total}")
+
+    typer.echo(f"Candidatos a expresión: {len(candidates)} · Modelo: {model}")
+    try:
+        pairs, _new = filter_candidates(
+            candidates,
+            cache=cache,
+            model=model,
+            client_factory=lambda: _openai_client(settings),
+            on_batch=progress,
+        )
+    except ExpressionError as exc:
+        typer.secho(
+            "Lo ya filtrado quedó en caché; vuelve a correr el comando para continuar.", err=True
+        )
+        _fail(exc)
+    return select_expressions(pairs, series, limit=limit, known=known)
 
 
 def _pixabay_http() -> httpx.Client:

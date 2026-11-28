@@ -18,6 +18,7 @@ from anki_series.cli import app
 from anki_series.models import Card, ImageStatus
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sample.srt"
+EXPR_FIXTURE = Path(__file__).parent / "fixtures" / "expressions.srt"
 CARDS = TypeAdapter(list[Card])
 runner = CliRunner()
 
@@ -177,6 +178,75 @@ def test_all_stops_on_failing_stage(all_env: dict, monkeypatch: pytest.MonkeyPat
     assert "OPENAI_API_KEY" in result.output
     assert "[3/5] images" not in result.output
     assert (all_env["data"] / "output" / "words.json").exists()
+
+
+# --- extract --expressions -------------------------------------------------------------
+
+
+def test_extract_without_expressions_stays_offline(all_env: dict):
+    result = runner.invoke(app, ["extract", str(EXPR_FIXTURE), "--series", "X"])
+    assert result.exit_code == 0, result.output
+    assert all_env["openai"] == []  # ni se crea el cliente
+    cards = CARDS.validate_json((all_env["data"] / "output" / "words.json").read_bytes())
+    assert not {c.pos for c in cards} & {"phrasal", "idiom"}
+    assert "Expresiones" not in result.output
+
+
+def test_extract_expressions_quota(all_env: dict):
+    args = ["extract", str(EXPR_FIXTURE), "--series", "X", "--top", "10", "--expressions", "3"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    cards = CARDS.validate_json((all_env["data"] / "output" / "words.json").read_bytes())
+    exprs = [c for c in cards if c.pos in {"phrasal", "idiom"}]
+    assert len(cards) == 10 and len(exprs) == 3  # 3 expresiones + 7 palabras
+    assert "sit down" not in {c.lemma for c in exprs}  # literal: descartada por el filtro
+    assert [c.rank for c in cards] == list(range(1, 11))
+    assert "Lemas: 7 · Expresiones: 3" in result.output
+    assert (all_env["data"] / "cache" / "expressions.json").exists()
+    assert all_env["openai"][0].calls[0]["model"] == "gpt-test"
+
+
+def test_extract_expressions_fewer_than_quota_fills_with_words(all_env: dict):
+    args = ["extract", str(EXPR_FIXTURE), "--series", "X", "--top", "20", "--expressions", "50"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    cards = CARDS.validate_json((all_env["data"] / "output" / "words.json").read_bytes())
+    exprs = [c for c in cards if c.pos in {"phrasal", "idiom"}]
+    assert len(exprs) == 4 and len(cards) == 20
+
+
+def test_extract_expressions_excludes_known_deck_but_not_wordfreq(all_env: dict, tmp_path: Path):
+    apkg = make_apkg(tmp_path, notes=[["1", "get rid of", ""], ["2", "car", ""]])
+    args = ["extract", str(EXPR_FIXTURE), "--series", "X", "--expressions", "10"]
+    args += ["--known-deck", str(apkg), "--known-field", "Palabra", "--exclude-common", "500"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0, result.output
+    cards = CARDS.validate_json((all_env["data"] / "output" / "words.json").read_bytes())
+    lemmas = {c.lemma for c in cards}
+    assert "get rid of" not in lemmas and "car" not in lemmas
+    # "make sense" son palabras muy comunes, pero las expresiones no pasan por wordfreq.
+    assert {"figure out", "make sense", "no offense"} <= lemmas
+
+
+def test_extract_expressions_missing_key_fails_cleanly(all_env: dict, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    args = ["extract", str(EXPR_FIXTURE), "--series", "X", "--expressions", "5"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1
+    assert "OPENAI_API_KEY" in result.output
+
+
+def test_all_with_expressions(all_env: dict):
+    args = ["all", str(EXPR_FIXTURE), "--series", "X", "--top", "12", "--expressions", "4"]
+    result = runner.invoke(cli.app, args)
+    assert result.exit_code == 0, result.output
+    cards = CARDS.validate_json((all_env["data"] / "output" / "cards.json").read_bytes())
+    exprs = {c.lemma: c for c in cards if c.pos in {"phrasal", "idiom"}}
+    assert set(exprs) == {"figure out", "get rid of", "make sense", "no offense"}
+    assert exprs["figure out"].translation == "es-figure out"
+    # Un cliente compartido: 1 llamada al filtro + lotes de traducción (palabras y expresiones).
+    prompts = [c["messages"][0]["content"] for cl in all_env["openai"] for c in cl.calls]
+    assert any("curate" in p for p in prompts) and any("English expressions" in p for p in prompts)
 
 
 def test_extract_missing_path_fails_cleanly(tmp_path: Path):
